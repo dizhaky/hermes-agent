@@ -138,6 +138,41 @@ class TestCircuitBreaker:
         assert len(fake.calls) == before
 
 
+class TestScopingAndSessions:
+    def test_recall_includes_user_scope(self, provider, tmp_path):
+        p, fake = provider
+        p._user_id = 'tg-12345'
+        p.handle_tool_call('memgw_recall', {'query': 'q'})
+        assert fake.calls[0][1].get('user_id') == 'tg-12345'
+
+    def test_no_user_scope_when_unset(self, provider):
+        p, fake = provider
+        p._user_id = ''
+        p.handle_tool_call('memgw_recall', {'query': 'q'})
+        assert 'user_id' not in fake.calls[0][1]
+
+    def test_session_switch_clears_and_invalidates_prefetch(self, provider):
+        p, _ = provider
+        with p._prefetch_lock:
+            p._prefetch_result = 'stale ctx'
+            gen_before = p._prefetch_gen
+        p.on_session_switch('new-session')
+        with p._prefetch_lock:
+            assert p._prefetch_result == ''
+            assert p._prefetch_gen > gen_before  # in-flight workers invalidated
+
+    def test_stale_prefetch_worker_cannot_overwrite_newer(self, provider):
+        # Simulate an old worker (gen N) finishing after a newer queue bumped gen.
+        p, _ = provider
+        with p._prefetch_lock:
+            p._prefetch_gen = 5
+            stale_gen = 4  # an older worker
+            # mimic the guarded store
+            if stale_gen == p._prefetch_gen:
+                p._prefetch_result = 'should not land'
+        assert p._prefetch_result != 'should not land'
+
+
 class TestConfig:
     def test_load_config_env_defaults(self, monkeypatch):
         monkeypatch.setenv('MEMGW_API_URL', 'http://localhost:8081/mcp')

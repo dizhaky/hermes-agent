@@ -52,3 +52,15 @@ Config can also live in `$HERMES_HOME/memgw.json`.
 
 A circuit breaker pauses calls for 120s after 5 consecutive failures so a
 gateway outage never blocks the turn loop; recall degrades gracefully to empty.
+
+## Why memgw is bundled (not under ~/.hermes/plugins/)
+
+AGENTS.md says new memory backends should generally ship as standalone user
+plugins. memgw is a **deliberate exception**: it is the owner's *default* memory
+provider for this fork (dizhaky/hermes-agent), and the memory plugin system
+(`plugins/memory/__init__.py`) explicitly supports bundled providers. Bundling
+ships it to every machine via git with no per-machine install — the desired
+behaviour for a default backend. It degrades to built-in memory when the `mcp`
+dependency or `MEMGW_API_KEY` is absent, so it is inert on installs that don't
+configure it. If this fork is ever upstreamed, memgw should move to
+`~/.hermes/plugins/` or a pip entry-point package per the standard policy.

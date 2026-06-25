@@ -145,7 +145,12 @@ class MemGatewayProvider(MemoryProvider):
         self._prefetch_result = ''
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: threading.Thread | None = None
+        # Monotonic generation: only the latest queued prefetch may store its
+        # result, so a slow older worker can't overwrite a newer one.
+        self._prefetch_gen = 0
         self._sync_thread: threading.Thread | None = None
+        self._sync_threads: list[threading.Thread] = []
+        self._sync_lock = threading.Lock()
         self._delegation_threads: list[threading.Thread] = []
         self._delegation_lock = threading.Lock()
         self._consecutive_failures = 0
@@ -279,12 +284,19 @@ class MemGatewayProvider(MemoryProvider):
         return f'## Memory Gateway\n{result}'
 
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        # Invalidate any in-flight prefetch from the previous session and drop
+        # its cached result, so the new session can't be fed stale context.
         with self._prefetch_lock:
             self._prefetch_result = ''
+            self._prefetch_gen += 1
 
     def queue_prefetch(self, query: str, *, session_id: str = '') -> None:
         if self._is_breaker_open() or self._prefetch_method == 'off' or not query:
             return
+
+        with self._prefetch_lock:
+            self._prefetch_gen += 1
+            my_gen = self._prefetch_gen
 
         def _run():
             try:
@@ -298,8 +310,12 @@ class MemGatewayProvider(MemoryProvider):
                     )
                     text = self._format_recall(payload)
                 if text:
+                    # Only store if no newer prefetch (or session switch) has
+                    # superseded this worker — prevents a slow older query from
+                    # clobbering a newer result.
                     with self._prefetch_lock:
-                        self._prefetch_result = text
+                        if my_gen == self._prefetch_gen:
+                            self._prefetch_result = text
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -351,8 +367,14 @@ class MemGatewayProvider(MemoryProvider):
                 self._record_failure()
                 logger.debug('memgw sync_turn failed: %s', e)
 
-        self._sync_thread = threading.Thread(target=_sync, daemon=True, name='memgw-sync')
-        self._sync_thread.start()
+        # Track every writer so a still-in-flight write isn't dropped when the
+        # next turn starts one; shutdown() joins all of them (not just the last).
+        t = threading.Thread(target=_sync, daemon=True, name='memgw-sync')
+        with self._sync_lock:
+            self._sync_threads = [st for st in self._sync_threads if st.is_alive()]
+            self._sync_threads.append(t)
+        self._sync_thread = t
+        t.start()
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = '', **kwargs) -> None:
         """Record a subagent task+result as a retrievable Experience."""
@@ -442,7 +464,11 @@ class MemGatewayProvider(MemoryProvider):
     def shutdown(self) -> None:
         with self._delegation_lock:
             pending = list(self._delegation_threads)
-        for t in (self._prefetch_thread, self._sync_thread, *pending):
+        with self._sync_lock:
+            sync_writers = list(self._sync_threads)
+        # Join every tracked writer/worker so no in-flight retain is dropped
+        # when the client closes.
+        for t in (self._prefetch_thread, *sync_writers, *pending):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         with self._client_lock:
