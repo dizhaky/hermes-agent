@@ -1197,10 +1197,7 @@ DEFAULT_CONFIG = {
         # Set to a provider name to activate: "memgw", "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
-        # Default: "memgw" — Dan's self-hosted Memory Gateway (Neo4j+Qdrant
-        # hybrid recall + reflection). Falls back to built-in if unavailable
-        # (is_available() returns False without MEMGW_API_KEY in cloud mode).
-        "provider": "memgw",
+        "provider": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

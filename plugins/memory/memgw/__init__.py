@@ -146,6 +146,8 @@ class MemGatewayProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: threading.Thread | None = None
         self._sync_thread: threading.Thread | None = None
+        self._delegation_threads: list[threading.Thread] = []
+        self._delegation_lock = threading.Lock()
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
 
@@ -154,6 +156,9 @@ class MemGatewayProvider(MemoryProvider):
         return 'memgw'
 
     def is_available(self) -> bool:
+        import importlib.util
+        if importlib.util.find_spec('mcp') is None:
+            return False
         cfg = _load_config()
         # Cloud mode needs a key; a localhost URL is allowed keyless.
         url = cfg.get('api_url', '')
@@ -273,6 +278,10 @@ class MemGatewayProvider(MemoryProvider):
             return ''
         return f'## Memory Gateway\n{result}'
 
+    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        with self._prefetch_lock:
+            self._prefetch_result = ''
+
     def queue_prefetch(self, query: str, *, session_id: str = '') -> None:
         if self._is_breaker_open() or self._prefetch_method == 'off' or not query:
             return
@@ -281,11 +290,11 @@ class MemGatewayProvider(MemoryProvider):
             try:
                 client = self._get_client()
                 if self._prefetch_method == 'reflect':
-                    payload = client.call_tool('reflect', {'query': query})
+                    payload = client.call_tool('reflect', {'query': query, **self._user_scope()})
                     text = self._format_reflect(payload)
                 else:
                     payload = client.call_tool(
-                        'recall', {'query': query, 'limit': self._recall_limit}
+                        'recall', {'query': query, 'limit': self._recall_limit, **self._user_scope()}
                     )
                     text = self._format_recall(payload)
                 if text:
@@ -312,12 +321,20 @@ class MemGatewayProvider(MemoryProvider):
                 lines.append(f'- {stmt} (confidence {conf})')
         return '\n'.join(lines)
 
+    # -- user scoping --------------------------------------------------------
+
+    def _user_scope(self) -> dict:
+        """Return user scoping metadata for multi-user gateway sessions."""
+        if self._user_id:
+            return {'user_id': self._user_id}
+        return {}
+
     # -- writes --------------------------------------------------------------
 
     def _retain(self, content: str, title: str, memory_type: str = 'memory') -> dict:
         client = self._get_client()
         return client.call_tool(
-            'write', {'content': content, 'title': title, 'memory_type': memory_type}
+            'write', {'content': content, 'title': title, 'memory_type': memory_type, **self._user_scope()}
         )
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = '') -> None:
@@ -334,8 +351,6 @@ class MemGatewayProvider(MemoryProvider):
                 self._record_failure()
                 logger.debug('memgw sync_turn failed: %s', e)
 
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=5.0)
         self._sync_thread = threading.Thread(target=_sync, daemon=True, name='memgw-sync')
         self._sync_thread.start()
 
@@ -353,7 +368,11 @@ class MemGatewayProvider(MemoryProvider):
                 self._record_failure()
                 logger.debug('memgw on_delegation failed: %s', e)
 
-        threading.Thread(target=_record, daemon=True, name='memgw-exp').start()
+        t = threading.Thread(target=_record, daemon=True, name='memgw-exp')
+        with self._delegation_lock:
+            self._delegation_threads = [dt for dt in self._delegation_threads if dt.is_alive()]
+            self._delegation_threads.append(t)
+        t.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Store a lightweight end-of-session summary."""
@@ -393,7 +412,7 @@ class MemGatewayProvider(MemoryProvider):
                 if not query:
                     return tool_error('Missing required parameter: query')
                 limit = min(int(args.get('limit', self._recall_limit)), 50)
-                payload = client.call_tool('recall', {'query': query, 'limit': limit})
+                payload = client.call_tool('recall', {'query': query, 'limit': limit, **self._user_scope()})
                 self._record_success()
                 return json.dumps(payload)
 
@@ -411,7 +430,7 @@ class MemGatewayProvider(MemoryProvider):
                 query = args.get('query', '')
                 if not query:
                     return tool_error('Missing required parameter: query')
-                payload = client.call_tool('reflect', {'query': query})
+                payload = client.call_tool('reflect', {'query': query, **self._user_scope()})
                 self._record_success()
                 return json.dumps(payload)
         except Exception as e:
@@ -421,7 +440,9 @@ class MemGatewayProvider(MemoryProvider):
         return tool_error(f'Unknown tool: {tool_name}')
 
     def shutdown(self) -> None:
-        for t in (self._prefetch_thread, self._sync_thread):
+        with self._delegation_lock:
+            pending = list(self._delegation_threads)
+        for t in (self._prefetch_thread, self._sync_thread, *pending):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         with self._client_lock:

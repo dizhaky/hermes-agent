@@ -32,23 +32,25 @@ class MemGatewayClient:
         self._timeout = timeout
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
+        self._loop_lock = threading.Lock()
 
     # -- event loop plumbing -------------------------------------------------
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
-        if self._loop and self._loop.is_running():
-            return self._loop
-        loop = asyncio.new_event_loop()
+        with self._loop_lock:
+            if self._loop and self._loop.is_running():
+                return self._loop
+            loop = asyncio.new_event_loop()
 
-        def _run() -> None:
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
+            def _run() -> None:
+                asyncio.set_event_loop(loop)
+                loop.run_forever()
 
-        thread = threading.Thread(target=_run, daemon=True, name='memgw-loop')
-        thread.start()
-        self._loop = loop
-        self._loop_thread = thread
-        return loop
+            thread = threading.Thread(target=_run, daemon=True, name='memgw-loop')
+            thread.start()
+            self._loop = loop
+            self._loop_thread = thread
+            return loop
 
     def _run_sync(self, coro: Any) -> Any:
         loop = self._ensure_loop()
@@ -71,6 +73,13 @@ class MemGatewayClient:
     @staticmethod
     def _unwrap(result: Any) -> dict[str, Any]:
         """Extract a JSON dict from an MCP CallToolResult."""
+        if getattr(result, 'isError', False):
+            content = getattr(result, 'content', None) or []
+            msg = next(
+                (getattr(b, 'text', None) for b in content if getattr(b, 'text', None)),
+                'tool error',
+            )
+            raise RuntimeError(f'MCP tool error: {msg}')
         # Prefer structured content when the server provides it.
         structured = getattr(result, 'structuredContent', None)
         if isinstance(structured, dict):
