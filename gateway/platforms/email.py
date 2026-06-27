@@ -169,6 +169,14 @@ def _strip_html(html: str) -> str:
     markup: link targets become ``label (url)`` so URLs survive, and block/list
     boundaries become newlines so lists and tables don't collapse into one run.
     """
+    # Drop <style>/<script> blocks entirely (tag *and* contents) so embedded
+    # CSS/JS from full HTML documents doesn't leak into the text fallback.
+    text = re.sub(
+        r"<(style|script)\b[^>]*>.*?</\1\s*>",
+        "",
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
     # Preserve link targets: <a href="url">label</a> -> "label (url)".
     def _anchor(m: re.Match) -> str:
         url = (m.group("url") or "").strip()
@@ -180,9 +188,20 @@ def _strip_html(html: str) -> str:
     text = re.sub(
         r"""<a\b[^>]*\bhref\s*=\s*["']?(?P<url>[^"'>\s]+)["']?[^>]*>(?P<label>.*?)</a>""",
         _anchor,
-        html,
+        text,
         flags=re.IGNORECASE | re.DOTALL,
     )
+    # Preserve images: <img src="url" alt="text"> -> "[image: alt (url)]" so a
+    # text-only / image-only body isn't blank.
+    def _img(m: re.Match) -> str:
+        tag = m.group(0)
+        src = re.search(r"""\bsrc\s*=\s*["']?([^"'>\s]+)""", tag, re.IGNORECASE)
+        alt = re.search(r"""\balt\s*=\s*["']([^"']*)["']""", tag, re.IGNORECASE)
+        parts = [p for p in (alt.group(1).strip() if alt else "",
+                             src.group(1).strip() if src else "") if p]
+        return f"[image: {' '.join(parts)}]" if parts else "[image]"
+
+    text = re.sub(r"<img\b[^>]*>", _img, text, flags=re.IGNORECASE)
     # Line breaks for explicit breaks and block/list/row boundaries so digests
     # stay readable (<ul><li>One</li><li>Two</li></ul> -> "One\nTwo").
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
@@ -194,6 +213,8 @@ def _strip_html(html: str) -> str:
         flags=re.IGNORECASE,
     )
     text = re.sub(r"<li[^>]*>", "\n", text, flags=re.IGNORECASE)
+    # Tab between table cells so columns don't fuse ("A</td><td>B" -> "A\tB").
+    text = re.sub(r"</(?:td|th)\s*>\s*<(?:td|th)[^>]*>", "\t", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"&amp;", "&", text)
@@ -207,24 +228,24 @@ def _strip_html(html: str) -> str:
 # plain text we should HTML-escape before wrapping. This no longer gates whether
 # HTML is sent (we always send a multipart/alternative) — it only decides if the
 # HTML part is the body verbatim or an escaped+linebreaked version, and how the
-# plain part is built. Detection is split by how each tag actually appears so
-# prose comparisons don't trip it:
-#   * Multi-letter tags accept a trailing ``>``, ``/`` or whitespace (for
-#     "<div class=...>", "<pre>", "<img src=...>").
-#   * ``b``/``i``/``p`` (single-letter, ~never carry attributes here) require an
-#     immediate ``>`` or ``/`` — so "<p>" matches but "if x<p and p>0" does not.
-#   * ``a`` is its own case: a bare "<a " also matches a comparison like
-#     "x<a and a>0", so an anchor only counts with an ``href=``/``name=`` attr
-#     or a closing ``</a>`` somewhere in the body.
-_HTML_TAGS_LENIENT = r"html|body|div|br|h[1-6]|ul|ol|li|table|span|strong|em|img|pre|code|blockquote"
-_HTML_TAGS_STRICT = r"b|i|p"  # single-letter, attribute-free in practice
-_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i|pre|code|blockquote"
+# plain part is built. Detection requires a *real* tag terminator so prose
+# comparisons against tag-named variables (``if x<div and div>0``, ``x<p``,
+# ``x<a and a>0``) don't get misread as markup:
+#   * Any listed tag matches when immediately closed (``<div>``), self-closed
+#     (``<br/>``), or followed by an attribute (``<div class=...>``,
+#     ``<img src=...>``) — i.e. ``<name`` then whitespace then ``word=``.
+#   * A bare ``<name `` followed by a non-attribute word (``<div and``) does NOT
+#     match, since that's how comparisons read.
+#   * ``a`` additionally needs ``href=``/``name=`` or an actual ``<a>``/``</a>``.
+#   * Any well-formed *closing* tag (``</p>``) also counts.
+_HTML_TAGS = r"html|body|div|br|h[1-6]|ul|ol|li|table|tr|td|th|span|strong|em|b|i|p|img|pre|code|blockquote"
+_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|tr|td|th|span|strong|em|b|i|pre|code|blockquote"
 _HTML_BODY_RE = re.compile(
-    rf"<\s*(?:{_HTML_TAGS_LENIENT})\s*(?:>|/|\s)"
-    rf"|<\s*(?:{_HTML_TAGS_STRICT})\s*(?:>|/)"
-    rf"|<\s*a\s+(?:href|name)\b"          # anchor only with a real attribute …
-    rf"|<\s*a\s*>|<\s*/\s*a\s*>"          # … or an actual <a>/</a> tag
-    rf"|<\s*/\s*(?:{_HTML_CLOSE_TAGS})\s*>",
+    rf"<\s*(?:{_HTML_TAGS})\s*/?>"                 # <tag> or <tag/>
+    rf"|<\s*(?:{_HTML_TAGS})\s+[a-zA-Z-]+\s*=" # <tag attr=...> (real attribute)
+    rf"|<\s*a\s+(?:href|name)\b"                   # anchor with a real attribute …
+    rf"|<\s*a\s*>|<\s*/\s*a\s*>"                   # … or an actual <a>/</a> tag
+    rf"|<\s*/\s*(?:{_HTML_CLOSE_TAGS})\s*>",       # any closing tag
     re.IGNORECASE,
 )
 
@@ -239,10 +260,14 @@ def _text_to_html(text: str) -> str:
 
     Escapes ``< > &`` so literal markup in prose (e.g. a coding-help reply that
     mentions ``<div class="card">``) is shown as text rather than rendered, and
-    wraps the result in ``<pre>`` so HTML whitespace collapsing doesn't eat the
-    indentation/alignment that text-only mail preserves (logs, code, tables).
+    wraps the result in a ``white-space: pre-wrap`` block so indentation/
+    alignment survives (logs, code, tables) *and* long lines/URLs still wrap
+    instead of being clipped — which a bare ``<pre>`` would prevent.
     """
-    return f"<pre>{html_lib.escape(text)}</pre>"
+    return (
+        f'<pre style="white-space: pre-wrap; word-wrap: break-word;">'
+        f"{html_lib.escape(text)}</pre>"
+    )
 
 
 def _attach_body(msg: MIMEMultipart, body: str) -> None:

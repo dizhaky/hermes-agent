@@ -167,6 +167,30 @@ class TestHelperFunctions(unittest.TestCase):
         result = _strip_html("<table><tr>R1</tr><tr>R2</tr></table>")
         self.assertNotIn("R1R2", result.replace("\n", "X"))
 
+    def test_strip_html_separates_table_cells(self):
+        # Codex feedback: <td>/<th> must not fuse columns.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<tr><td>A</td><td>B</td></tr>")
+        self.assertNotIn("AB", result.replace("\t", "X").replace("\n", "X"))
+        self.assertIn("A", result)
+        self.assertIn("B", result)
+
+    def test_strip_html_drops_style_and_script(self):
+        # Codex feedback: embedded CSS/JS must not leak into the text fallback.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<style>.x{color:red}</style><h1>Digest</h1>"
+                             "<script>alert(1)</script>")
+        self.assertEqual(result.strip(), "Digest")
+        self.assertNotIn("color:red", result)
+        self.assertNotIn("alert", result)
+
+    def test_strip_html_preserves_image_reference(self):
+        # Codex feedback: image-only body must not become blank.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html('<img src="https://e.com/c.png" alt="chart">')
+        self.assertIn("chart", result)
+        self.assertIn("https://e.com/c.png", result)
+
 
 class TestHtmlBodyDetection(unittest.TestCase):
     """Every email is multipart/alternative; detection only shapes the HTML part."""
@@ -205,6 +229,17 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertFalse(_is_html_body("a<b and b>c"))
         self.assertFalse(_is_html_body("5<i means five is less than i"))
         self.assertFalse(_is_html_body("if x<p and p>0: pass"))
+        # Comparisons against multi-letter tag-named variables must not match
+        # either: a real tag closes (<div>) or has an attribute (<div class=),
+        # but "<div and" / "<code and" is a comparison.
+        self.assertFalse(_is_html_body("if x<div and div>0: pass"))
+        self.assertFalse(_is_html_body("if x<code and code>0: pass"))
+        self.assertFalse(_is_html_body("if x<span and span>0: pass"))
+
+    def test_detects_tags_with_attributes(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertTrue(_is_html_body('<div class="card">x</div>'))
+        self.assertTrue(_is_html_body('<img src="http://x/y.png">'))
 
     def test_attach_always_multipart_alternative(self):
         from email.mime.multipart import MIMEMultipart
@@ -241,15 +276,17 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertEqual(parts["text/plain"], body)
         self.assertIn("a&lt;b", parts["text/html"])         # escaped, shown as text
 
-    def test_plain_text_whitespace_preserved_via_pre(self):
-        # Codex feedback: indentation/alignment must survive (logs, code, tables).
-        # The HTML part wraps escaped text in <pre> so spaces aren't collapsed.
+    def test_plain_text_whitespace_preserved_and_wraps(self):
+        # Codex feedback: indentation/alignment must survive (logs, code, tables)
+        # AND long lines must still wrap — so it's <pre> with white-space:pre-wrap,
+        # not a bare <pre> that disables wrapping.
         from email.mime.multipart import MIMEMultipart
         from gateway.platforms.email import _attach_body
         msg = MIMEMultipart()
         _attach_body(msg, "col1    col2\n  indented line")
         html = self._parts(msg)["text/html"]
-        self.assertIn("<pre>", html)
+        self.assertIn("<pre", html)
+        self.assertIn("pre-wrap", html)                      # long lines still wrap
         self.assertIn("col1    col2", html)                  # repeated spaces kept
 
     def test_anchor_comparison_not_treated_as_html(self):
