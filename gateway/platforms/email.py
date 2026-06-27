@@ -174,6 +174,39 @@ def _strip_html(html: str) -> str:
     return text.strip()
 
 
+# Tags that indicate a body is HTML rather than plain text. Kept narrow so a
+# stray "<3" or a "x < y" comparison in a plain-text body isn't misdetected.
+_HTML_BODY_RE = re.compile(
+    r"<\s*(html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i)\b"
+    r"|<\s*/\s*(html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i)\s*>",
+    re.IGNORECASE,
+)
+
+
+def _is_html_body(body: str) -> bool:
+    """Heuristic: does this body contain real HTML markup we should render?"""
+    return bool(_HTML_BODY_RE.search(body))
+
+
+def _attach_body(msg: MIMEMultipart, body: str) -> None:
+    """Attach *body* to *msg* as text.
+
+    If the body looks like HTML, send a ``multipart/alternative`` carrying both
+    a plain-text fallback (tags stripped) and the HTML part, so clients render
+    the markup instead of showing raw tags. Otherwise attach a single
+    ``text/plain`` part.
+    """
+    if not body:
+        return
+    if _is_html_body(body):
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(_strip_html(body), "plain", "utf-8"))
+        alt.attach(MIMEText(body, "html", "utf-8"))
+        msg.attach(alt)
+    else:
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+
 def _extract_email_address(raw: str) -> str:
     """Extract bare email address from 'Name <addr>' format."""
     match = re.search(r"<([^>]+)>", raw)
@@ -546,7 +579,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        _attach_body(msg, body)
 
         smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
         try:
@@ -655,8 +688,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+        _attach_body(msg, body)
 
         for file_path in file_paths:
             p = Path(file_path)
@@ -736,8 +768,7 @@ class EmailAdapter(BasePlatformAdapter):
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
-        if body:
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+        _attach_body(msg, body)
 
         # Attach file
         p = Path(file_path)

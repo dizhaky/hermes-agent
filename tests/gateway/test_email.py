@@ -148,6 +148,49 @@ class TestHelperFunctions(unittest.TestCase):
         self.assertIn("a & b", result)
 
 
+class TestHtmlBodyDetection(unittest.TestCase):
+    """HTML bodies must be sent as multipart/alternative, not raw text/plain."""
+
+    def test_detects_html_body(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertTrue(_is_html_body("<h2>Digest</h2><p>Item</p>"))
+        self.assertTrue(_is_html_body('Read <a href="http://x">more</a>'))
+
+    def test_plain_text_not_detected_as_html(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertFalse(_is_html_body("Plain text, no markup."))
+        self.assertFalse(_is_html_body("if x < y and y > z: pass"))
+        self.assertFalse(_is_html_body("I <3 this"))
+
+    def test_attach_html_body_is_multipart_alternative(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "<p>Hello <strong>world</strong></p>")
+        # Expect one alternative part carrying both text/plain and text/html.
+        types = sorted(
+            sub.get_content_type()
+            for part in msg.get_payload()
+            for sub in part.get_payload()
+        )
+        self.assertEqual(types, ["text/html", "text/plain"])
+
+    def test_attach_plain_body_stays_text_plain(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "Just plain text")
+        part = msg.get_payload()[0]
+        self.assertEqual(part.get_content_type(), "text/plain")
+
+    def test_attach_empty_body_is_noop(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "")
+        self.assertEqual(msg.get_payload(), [])
+
+
 class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""
 
