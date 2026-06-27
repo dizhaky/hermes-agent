@@ -234,7 +234,7 @@ class Mem0MemoryProvider(MemoryProvider):
             "mem0_profile for a full overview."
         )
 
-    def prefetch(self, query: str, *, session_id: str = "") -> str:
+    def prefetch(self, query: str, *, session_id: str = "", user_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
