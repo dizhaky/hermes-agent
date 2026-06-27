@@ -178,25 +178,24 @@ def _strip_html(html: str) -> str:
 # Whether a body *already* contains HTML markup we should send as-is, versus
 # plain text we should HTML-escape before wrapping. This no longer gates whether
 # HTML is sent (we always send a multipart/alternative) — it only decides if the
-# HTML part is the body verbatim or an escaped+linebreaked version. So a wrong
-# guess never makes the email worse than plain text: the plain part is always the
-# faithful original, and a misjudged plain body just shows its literal "<tag>" as
-# code in the HTML part.
-#
-# An opening tag only counts when the tag name is followed by a real terminator,
-# and single-letter tags are split by how they usually appear so prose
-# comparisons don't trip them:
+# HTML part is the body verbatim or an escaped+linebreaked version, and how the
+# plain part is built. Detection is split by how each tag actually appears so
+# prose comparisons don't trip it:
+#   * Multi-letter tags accept a trailing ``>``, ``/`` or whitespace (for
+#     "<div class=...>", "<pre>", "<img src=...>").
 #   * ``b``/``i`` (bold/italic, ~never carry attributes) require an immediate
-#     ``>`` or ``/`` — so "<b>" matches but "a<b and b>c" (whitespace after b)
-#     does not.
-#   * ``a`` (anchors almost always have href=) and multi-letter tags accept a
-#     trailing ``>``, ``/`` or whitespace (for "<a href=...>", "<div class=...>").
-_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em|img|pre|code|blockquote"
+#     ``>`` or ``/`` — so "<b>" matches but "a<b and b>c" does not.
+#   * ``a`` is its own case: a bare "<a " also matches a comparison like
+#     "x<a and a>0", so an anchor only counts with an ``href=``/``name=`` attr
+#     or a closing ``</a>`` somewhere in the body.
+_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|ul|ol|li|table|span|strong|em|img|pre|code|blockquote"
 _HTML_TAGS_STRICT = r"b|i"  # single-letter, attribute-free in practice
 _HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i|pre|code|blockquote"
 _HTML_BODY_RE = re.compile(
     rf"<\s*(?:{_HTML_TAGS_LENIENT})\s*(?:>|/|\s)"
     rf"|<\s*(?:{_HTML_TAGS_STRICT})\s*(?:>|/)"
+    rf"|<\s*a\s+(?:href|name)\b"          # anchor only with a real attribute …
+    rf"|<\s*a\s*>|<\s*/\s*a\s*>"          # … or an actual <a>/</a> tag
     rf"|<\s*/\s*(?:{_HTML_CLOSE_TAGS})\s*>",
     re.IGNORECASE,
 )
@@ -212,26 +211,34 @@ def _text_to_html(text: str) -> str:
 
     Escapes ``< > &`` so literal markup in prose (e.g. a coding-help reply that
     mentions ``<div class="card">``) is shown as text rather than rendered, and
-    turns newlines into ``<br>`` so the layout survives.
+    wraps the result in ``<pre>`` so HTML whitespace collapsing doesn't eat the
+    indentation/alignment that text-only mail preserves (logs, code, tables).
     """
-    return html_lib.escape(text).replace("\n", "<br>\n")
+    return f"<pre>{html_lib.escape(text)}</pre>"
 
 
 def _attach_body(msg: MIMEMultipart, body: str) -> None:
     """Attach *body* to *msg* as a ``multipart/alternative``.
 
-    Always carries two parts: a ``text/plain`` part that is the body verbatim
-    (the faithful fallback — never tag-stripped), and a ``text/html`` part.
-    When the body already looks like HTML it is used as-is; otherwise it is
-    escaped and line-broken via :func:`_text_to_html`. Sending both parts means
-    we never have to *guess whether* to send HTML — only how to build the HTML
-    part — so misdetection can't regress a plain-text email.
+    Always carries two parts so we never have to guess *whether* to send HTML —
+    only how to build each part:
+
+    - ``text/plain``: the readable text. For a plain body that's the body
+      verbatim; for an HTML body it's the tag-stripped text (so text-only
+      clients and indexed snippets don't see raw ``<h2>``/``<p>`` markup).
+    - ``text/html``: an HTML body verbatim, or a plain body escaped and wrapped
+      in ``<pre>`` via :func:`_text_to_html`.
+
+    Either way the plain part is always readable and misdetection can't regress
+    an email below plain text.
     """
     if not body:
         return
+    is_html = _is_html_body(body)
+    plain_part = _strip_html(body) if is_html else body
+    html_part = body if is_html else _text_to_html(body)
     alt = MIMEMultipart("alternative")
-    alt.attach(MIMEText(body, "plain", "utf-8"))
-    html_part = body if _is_html_body(body) else _text_to_html(body)
+    alt.attach(MIMEText(plain_part, "plain", "utf-8"))
     alt.attach(MIMEText(html_part, "html", "utf-8"))
     msg.attach(alt)
 

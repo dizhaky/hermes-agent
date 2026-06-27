@@ -193,30 +193,24 @@ class TestHtmlBodyDetection(unittest.TestCase):
             _attach_body(msg, body)
             self.assertEqual(sorted(self._parts(msg)), ["text/html", "text/plain"])
 
-    def test_html_body_used_verbatim_in_html_part(self):
+    def test_html_body_verbatim_in_html_part_stripped_in_plain(self):
         from email.mime.multipart import MIMEMultipart
         from gateway.platforms.email import _attach_body
         msg = MIMEMultipart()
-        _attach_body(msg, "<p>Hi <strong>world</strong></p>")
+        _attach_body(msg, "<h2>Digest</h2><p>Hi <strong>world</strong></p>")
         parts = self._parts(msg)
+        # HTML part keeps the markup verbatim …
         self.assertIn("<strong>world</strong>", parts["text/html"])
-        # Plain part is the verbatim body (faithful fallback).
-        self.assertEqual(parts["text/plain"], "<p>Hi <strong>world</strong></p>")
+        # … but the plain part is tag-stripped, so text-only clients and indexed
+        # snippets never see raw <h2>/<p> markup (Codex feedback).
+        self.assertNotIn("<p>", parts["text/plain"])
+        self.assertNotIn("<h2>", parts["text/plain"])
+        self.assertIn("Digest", parts["text/plain"])
+        self.assertIn("world", parts["text/plain"])
 
-    def test_plain_part_always_preserves_literal_text(self):
-        # Codex feedback: a coding-help reply mentioning literal markup must keep
-        # the exact text available. The plain part is ALWAYS verbatim, so even if
-        # the HTML part renders embedded markup, the original is never lost.
-        from email.mime.multipart import MIMEMultipart
-        from gateway.platforms.email import _attach_body
-        msg = MIMEMultipart()
-        body = 'Use <div class="card">...</div> in your template'
-        _attach_body(msg, body)
-        self.assertEqual(self._parts(msg)["text/plain"], body)
-
-    def test_prose_with_partial_angle_brackets_is_escaped(self):
-        # A reply that uses angle brackets but no *complete* tag is plain text:
-        # it must be escaped in the HTML part, not passed through.
+    def test_plain_prose_kept_verbatim_in_plain_part(self):
+        # A reply with no *complete* tag is plain text: plain part is verbatim,
+        # HTML part escapes it so the brackets show as text rather than render.
         from email.mime.multipart import MIMEMultipart
         from gateway.platforms.email import _attach_body
         msg = MIMEMultipart()
@@ -226,12 +220,33 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertEqual(parts["text/plain"], body)
         self.assertIn("a&lt;b", parts["text/html"])         # escaped, shown as text
 
-    def test_plain_text_newlines_become_breaks(self):
+    def test_plain_text_whitespace_preserved_via_pre(self):
+        # Codex feedback: indentation/alignment must survive (logs, code, tables).
+        # The HTML part wraps escaped text in <pre> so spaces aren't collapsed.
         from email.mime.multipart import MIMEMultipart
         from gateway.platforms.email import _attach_body
         msg = MIMEMultipart()
-        _attach_body(msg, "line one\nline two")
-        self.assertIn("<br>", self._parts(msg)["text/html"])
+        _attach_body(msg, "col1    col2\n  indented line")
+        html = self._parts(msg)["text/html"]
+        self.assertIn("<pre>", html)
+        self.assertIn("col1    col2", html)                  # repeated spaces kept
+
+    def test_anchor_comparison_not_treated_as_html(self):
+        # Codex feedback: "if x<a and a>0" must NOT be parsed as an <a> anchor.
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body, _is_html_body
+        body = "if x<a and a>0: pass"
+        self.assertFalse(_is_html_body(body))
+        msg = MIMEMultipart()
+        _attach_body(msg, body)
+        parts = self._parts(msg)
+        self.assertEqual(parts["text/plain"], body)          # sent as plain, verbatim
+        self.assertNotIn("<a", parts["text/html"])           # escaped, not a tag
+
+    def test_real_anchor_still_detected(self):
+        from gateway.platforms.email import _is_html_body
+        self.assertTrue(_is_html_body('Click <a href="http://x">here</a>'))
+        self.assertTrue(_is_html_body("Link: <a>text</a>"))
 
     def test_attach_empty_body_is_noop(self):
         from email.mime.multipart import MIMEMultipart
