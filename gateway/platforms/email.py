@@ -162,10 +162,38 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
 
 
 def _strip_html(html: str) -> str:
-    """Naive HTML tag stripper for fallback text extraction."""
-    text = re.sub(r"<br\s*/?>", "\n", html, flags=re.IGNORECASE)
+    """Convert an HTML fragment to readable plain text.
+
+    Used for the inbound text extraction *and* the outbound ``text/plain``
+    alternative of an HTML body, so it keeps the parts that matter without
+    markup: link targets become ``label (url)`` so URLs survive, and block/list
+    boundaries become newlines so lists and tables don't collapse into one run.
+    """
+    # Preserve link targets: <a href="url">label</a> -> "label (url)".
+    def _anchor(m: re.Match) -> str:
+        url = (m.group("url") or "").strip()
+        label = _strip_html(m.group("label")).strip()
+        if not url or url == label:
+            return label
+        return f"{label} ({url})" if label else url
+
+    text = re.sub(
+        r"""<a\b[^>]*\bhref\s*=\s*["']?(?P<url>[^"'>\s]+)["']?[^>]*>(?P<label>.*?)</a>""",
+        _anchor,
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # Line breaks for explicit breaks and block/list/row boundaries so digests
+    # stay readable (<ul><li>One</li><li>Two</li></ul> -> "One\nTwo").
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<p[^>]*>", "\n", text, flags=re.IGNORECASE)
-    text = re.sub(r"</p>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"</(?:p|div|li|ul|ol|tr|table|h[1-6]|blockquote)\s*>",
+        "\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"<li[^>]*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"&amp;", "&", text)
@@ -183,13 +211,13 @@ def _strip_html(html: str) -> str:
 # prose comparisons don't trip it:
 #   * Multi-letter tags accept a trailing ``>``, ``/`` or whitespace (for
 #     "<div class=...>", "<pre>", "<img src=...>").
-#   * ``b``/``i`` (bold/italic, ~never carry attributes) require an immediate
-#     ``>`` or ``/`` — so "<b>" matches but "a<b and b>c" does not.
+#   * ``b``/``i``/``p`` (single-letter, ~never carry attributes here) require an
+#     immediate ``>`` or ``/`` — so "<p>" matches but "if x<p and p>0" does not.
 #   * ``a`` is its own case: a bare "<a " also matches a comparison like
 #     "x<a and a>0", so an anchor only counts with an ``href=``/``name=`` attr
 #     or a closing ``</a>`` somewhere in the body.
-_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|ul|ol|li|table|span|strong|em|img|pre|code|blockquote"
-_HTML_TAGS_STRICT = r"b|i"  # single-letter, attribute-free in practice
+_HTML_TAGS_LENIENT = r"html|body|div|br|h[1-6]|ul|ol|li|table|span|strong|em|img|pre|code|blockquote"
+_HTML_TAGS_STRICT = r"b|i|p"  # single-letter, attribute-free in practice
 _HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i|pre|code|blockquote"
 _HTML_BODY_RE = re.compile(
     rf"<\s*(?:{_HTML_TAGS_LENIENT})\s*(?:>|/|\s)"

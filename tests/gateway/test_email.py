@@ -147,6 +147,26 @@ class TestHelperFunctions(unittest.TestCase):
         result = _strip_html(html)
         self.assertIn("a & b", result)
 
+    def test_strip_html_preserves_link_url(self):
+        # Codex feedback: text-only readers must keep the actual URL.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html('See <a href="https://x.com/report">the report</a>')
+        self.assertIn("the report", result)
+        self.assertIn("https://x.com/report", result)
+
+    def test_strip_html_keeps_list_boundaries(self):
+        # Codex feedback: lists must not collapse into one run.
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<ul><li>One</li><li>Two</li></ul>")
+        self.assertIn("One", result)
+        self.assertIn("Two", result)
+        self.assertNotIn("OneTwo", result.replace("\n", "X"))  # separated, not fused
+
+    def test_strip_html_keeps_table_row_boundaries(self):
+        from gateway.platforms.email import _strip_html
+        result = _strip_html("<table><tr>R1</tr><tr>R2</tr></table>")
+        self.assertNotIn("R1R2", result.replace("\n", "X"))
+
 
 class TestHtmlBodyDetection(unittest.TestCase):
     """Every email is multipart/alternative; detection only shapes the HTML part."""
@@ -181,9 +201,10 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertFalse(_is_html_body("Plain text, no markup."))
         self.assertFalse(_is_html_body("if x < y and y > z: pass"))
         self.assertFalse(_is_html_body("I <3 this"))
-        # Comparisons against single-letter operands must not look like <b>/<i>.
+        # Comparisons against single-letter operands must not look like <b>/<i>/<p>.
         self.assertFalse(_is_html_body("a<b and b>c"))
         self.assertFalse(_is_html_body("5<i means five is less than i"))
+        self.assertFalse(_is_html_body("if x<p and p>0: pass"))
 
     def test_attach_always_multipart_alternative(self):
         from email.mime.multipart import MIMEMultipart
