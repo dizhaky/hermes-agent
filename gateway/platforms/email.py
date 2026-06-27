@@ -17,6 +17,7 @@ Environment variables:
 
 import asyncio
 import email as email_lib
+import html as html_lib
 import imaplib
 import logging
 import os
@@ -174,21 +175,25 @@ def _strip_html(html: str) -> str:
     return text.strip()
 
 
-# Tags that indicate a body is HTML rather than plain text. Kept narrow so a
-# stray "<3", an "x < y" comparison, or an "a<b" expression in a plain-text body
-# isn't misdetected.
+# Whether a body *already* contains HTML markup we should send as-is, versus
+# plain text we should HTML-escape before wrapping. This no longer gates whether
+# HTML is sent (we always send a multipart/alternative) — it only decides if the
+# HTML part is the body verbatim or an escaped+linebreaked version. So a wrong
+# guess never makes the email worse than plain text: the plain part is always the
+# faithful original, and a misjudged plain body just shows its literal "<tag>" as
+# code in the HTML part.
 #
-# An opening tag only counts when the tag name is followed by a real terminator.
-# Single-letter tags are split by how they usually appear so prose comparisons
-# don't trip them:
+# An opening tag only counts when the tag name is followed by a real terminator,
+# and single-letter tags are split by how they usually appear so prose
+# comparisons don't trip them:
 #   * ``b``/``i`` (bold/italic, ~never carry attributes) require an immediate
 #     ``>`` or ``/`` — so "<b>" matches but "a<b and b>c" (whitespace after b)
 #     does not.
 #   * ``a`` (anchors almost always have href=) and multi-letter tags accept a
 #     trailing ``>``, ``/`` or whitespace (for "<a href=...>", "<div class=...>").
-_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em|img|pre"
+_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em|img|pre|code|blockquote"
 _HTML_TAGS_STRICT = r"b|i"  # single-letter, attribute-free in practice
-_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i|pre"
+_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i|pre|code|blockquote"
 _HTML_BODY_RE = re.compile(
     rf"<\s*(?:{_HTML_TAGS_LENIENT})\s*(?:>|/|\s)"
     rf"|<\s*(?:{_HTML_TAGS_STRICT})\s*(?:>|/)"
@@ -198,27 +203,37 @@ _HTML_BODY_RE = re.compile(
 
 
 def _is_html_body(body: str) -> bool:
-    """Heuristic: does this body contain real HTML markup we should render?"""
+    """Heuristic: is this body already HTML markup (vs. plain text to escape)?"""
     return bool(_HTML_BODY_RE.search(body))
 
 
-def _attach_body(msg: MIMEMultipart, body: str) -> None:
-    """Attach *body* to *msg* as text.
+def _text_to_html(text: str) -> str:
+    """Convert a plain-text body to a safe HTML fragment.
 
-    If the body looks like HTML, send a ``multipart/alternative`` carrying both
-    a plain-text fallback (tags stripped) and the HTML part, so clients render
-    the markup instead of showing raw tags. Otherwise attach a single
-    ``text/plain`` part.
+    Escapes ``< > &`` so literal markup in prose (e.g. a coding-help reply that
+    mentions ``<div class="card">``) is shown as text rather than rendered, and
+    turns newlines into ``<br>`` so the layout survives.
+    """
+    return html_lib.escape(text).replace("\n", "<br>\n")
+
+
+def _attach_body(msg: MIMEMultipart, body: str) -> None:
+    """Attach *body* to *msg* as a ``multipart/alternative``.
+
+    Always carries two parts: a ``text/plain`` part that is the body verbatim
+    (the faithful fallback — never tag-stripped), and a ``text/html`` part.
+    When the body already looks like HTML it is used as-is; otherwise it is
+    escaped and line-broken via :func:`_text_to_html`. Sending both parts means
+    we never have to *guess whether* to send HTML — only how to build the HTML
+    part — so misdetection can't regress a plain-text email.
     """
     if not body:
         return
-    if _is_html_body(body):
-        alt = MIMEMultipart("alternative")
-        alt.attach(MIMEText(_strip_html(body), "plain", "utf-8"))
-        alt.attach(MIMEText(body, "html", "utf-8"))
-        msg.attach(alt)
-    else:
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(body, "plain", "utf-8"))
+    html_part = body if _is_html_body(body) else _text_to_html(body)
+    alt.attach(MIMEText(html_part, "html", "utf-8"))
+    msg.attach(alt)
 
 
 def _extract_email_address(raw: str) -> str:

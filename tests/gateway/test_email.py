@@ -149,7 +149,14 @@ class TestHelperFunctions(unittest.TestCase):
 
 
 class TestHtmlBodyDetection(unittest.TestCase):
-    """HTML bodies must be sent as multipart/alternative, not raw text/plain."""
+    """Every email is multipart/alternative; detection only shapes the HTML part."""
+
+    @staticmethod
+    def _parts(msg):
+        """Return {content_type: payload_str} for the alternative subparts."""
+        alt = msg.get_payload()[0]
+        return {sub.get_content_type(): sub.get_payload(decode=True).decode("utf-8")
+                for sub in alt.get_payload()}
 
     def test_detects_html_body(self):
         from gateway.platforms.email import _is_html_body
@@ -163,6 +170,12 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertTrue(_is_html_body("Hello <i>world</i>"))
         self.assertTrue(_is_html_body("Line one<br/>Line two"))
 
+    def test_detects_standalone_tags(self):
+        from gateway.platforms.email import _is_html_body
+        # Codex feedback: image-only / preformatted bodies are valid HTML too.
+        self.assertTrue(_is_html_body('<img src="http://x/y.png">'))
+        self.assertTrue(_is_html_body("<pre>code block</pre>"))
+
     def test_plain_text_not_detected_as_html(self):
         from gateway.platforms.email import _is_html_body
         self.assertFalse(_is_html_body("Plain text, no markup."))
@@ -172,26 +185,53 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertFalse(_is_html_body("a<b and b>c"))
         self.assertFalse(_is_html_body("5<i means five is less than i"))
 
-    def test_attach_html_body_is_multipart_alternative(self):
+    def test_attach_always_multipart_alternative(self):
         from email.mime.multipart import MIMEMultipart
         from gateway.platforms.email import _attach_body
-        msg = MIMEMultipart()
-        _attach_body(msg, "<p>Hello <strong>world</strong></p>")
-        # Expect one alternative part carrying both text/plain and text/html.
-        types = sorted(
-            sub.get_content_type()
-            for part in msg.get_payload()
-            for sub in part.get_payload()
-        )
-        self.assertEqual(types, ["text/html", "text/plain"])
+        for body in ("<p>Hello <strong>world</strong></p>", "Just plain text"):
+            msg = MIMEMultipart()
+            _attach_body(msg, body)
+            self.assertEqual(sorted(self._parts(msg)), ["text/html", "text/plain"])
 
-    def test_attach_plain_body_stays_text_plain(self):
+    def test_html_body_used_verbatim_in_html_part(self):
         from email.mime.multipart import MIMEMultipart
         from gateway.platforms.email import _attach_body
         msg = MIMEMultipart()
-        _attach_body(msg, "Just plain text")
-        part = msg.get_payload()[0]
-        self.assertEqual(part.get_content_type(), "text/plain")
+        _attach_body(msg, "<p>Hi <strong>world</strong></p>")
+        parts = self._parts(msg)
+        self.assertIn("<strong>world</strong>", parts["text/html"])
+        # Plain part is the verbatim body (faithful fallback).
+        self.assertEqual(parts["text/plain"], "<p>Hi <strong>world</strong></p>")
+
+    def test_plain_part_always_preserves_literal_text(self):
+        # Codex feedback: a coding-help reply mentioning literal markup must keep
+        # the exact text available. The plain part is ALWAYS verbatim, so even if
+        # the HTML part renders embedded markup, the original is never lost.
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        body = 'Use <div class="card">...</div> in your template'
+        _attach_body(msg, body)
+        self.assertEqual(self._parts(msg)["text/plain"], body)
+
+    def test_prose_with_partial_angle_brackets_is_escaped(self):
+        # A reply that uses angle brackets but no *complete* tag is plain text:
+        # it must be escaped in the HTML part, not passed through.
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        body = "Compare a<b to verify the sort order"
+        _attach_body(msg, body)
+        parts = self._parts(msg)
+        self.assertEqual(parts["text/plain"], body)
+        self.assertIn("a&lt;b", parts["text/html"])         # escaped, shown as text
+
+    def test_plain_text_newlines_become_breaks(self):
+        from email.mime.multipart import MIMEMultipart
+        from gateway.platforms.email import _attach_body
+        msg = MIMEMultipart()
+        _attach_body(msg, "line one\nline two")
+        self.assertIn("<br>", self._parts(msg)["text/html"])
 
     def test_attach_empty_body_is_noop(self):
         from email.mime.multipart import MIMEMultipart
