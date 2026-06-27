@@ -175,10 +175,24 @@ def _strip_html(html: str) -> str:
 
 
 # Tags that indicate a body is HTML rather than plain text. Kept narrow so a
-# stray "<3" or a "x < y" comparison in a plain-text body isn't misdetected.
+# stray "<3", an "x < y" comparison, or an "a<b" expression in a plain-text body
+# isn't misdetected.
+#
+# An opening tag only counts when the tag name is followed by a real terminator.
+# Single-letter tags are split by how they usually appear so prose comparisons
+# don't trip them:
+#   * ``b``/``i`` (bold/italic, ~never carry attributes) require an immediate
+#     ``>`` or ``/`` — so "<b>" matches but "a<b and b>c" (whitespace after b)
+#     does not.
+#   * ``a`` (anchors almost always have href=) and multi-letter tags accept a
+#     trailing ``>``, ``/`` or whitespace (for "<a href=...>", "<div class=...>").
+_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em"
+_HTML_TAGS_STRICT = r"b|i"  # single-letter, attribute-free in practice
+_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i"
 _HTML_BODY_RE = re.compile(
-    r"<\s*(html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i)\b"
-    r"|<\s*/\s*(html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i)\s*>",
+    rf"<\s*(?:{_HTML_TAGS_LENIENT})\s*(?:>|/|\s)"
+    rf"|<\s*(?:{_HTML_TAGS_STRICT})\s*(?:>|/)"
+    rf"|<\s*/\s*(?:{_HTML_CLOSE_TAGS})\s*>",
     re.IGNORECASE,
 )
 

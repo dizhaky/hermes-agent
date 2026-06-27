@@ -156,11 +156,21 @@ class TestHtmlBodyDetection(unittest.TestCase):
         self.assertTrue(_is_html_body("<h2>Digest</h2><p>Item</p>"))
         self.assertTrue(_is_html_body('Read <a href="http://x">more</a>'))
 
+    def test_detects_single_letter_tags(self):
+        from gateway.platforms.email import _is_html_body
+        # Real single-letter tags must still be detected as HTML.
+        self.assertTrue(_is_html_body("Hello <b>world</b>"))
+        self.assertTrue(_is_html_body("Hello <i>world</i>"))
+        self.assertTrue(_is_html_body("Line one<br/>Line two"))
+
     def test_plain_text_not_detected_as_html(self):
         from gateway.platforms.email import _is_html_body
         self.assertFalse(_is_html_body("Plain text, no markup."))
         self.assertFalse(_is_html_body("if x < y and y > z: pass"))
         self.assertFalse(_is_html_body("I <3 this"))
+        # Comparisons against single-letter operands must not look like <b>/<i>.
+        self.assertFalse(_is_html_body("a<b and b>c"))
+        self.assertFalse(_is_html_body("5<i means five is less than i"))
 
     def test_attach_html_body_is_multipart_alternative(self):
         from email.mime.multipart import MIMEMultipart
