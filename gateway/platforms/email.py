@@ -186,9 +186,9 @@ def _strip_html(html: str) -> str:
 #     does not.
 #   * ``a`` (anchors almost always have href=) and multi-letter tags accept a
 #     trailing ``>``, ``/`` or whitespace (for "<a href=...>", "<div class=...>").
-_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em"
+_HTML_TAGS_LENIENT = r"html|body|div|p|br|h[1-6]|a|ul|ol|li|table|span|strong|em|img|pre"
 _HTML_TAGS_STRICT = r"b|i"  # single-letter, attribute-free in practice
-_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i"
+_HTML_CLOSE_TAGS = r"html|body|div|p|h[1-6]|a|ul|ol|li|table|span|strong|em|b|i|pre"
 _HTML_BODY_RE = re.compile(
     rf"<\s*(?:{_HTML_TAGS_LENIENT})\s*(?:>|/|\s)"
     rf"|<\s*(?:{_HTML_TAGS_STRICT})\s*(?:>|/)"
