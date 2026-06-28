@@ -241,7 +241,7 @@ class Mem0MemoryProvider(MemoryProvider):
         with self._prefetch_lock:
             cached = self._prefetch_result
             self._prefetch_result = None
-        if not cached or cached[0] != effective_user_id:
+        if not cached or cached[0] != effective_user_id or not cached[1]:
             return ""
         return f"## Mem0 Memory\n{cached[1]}"
 
