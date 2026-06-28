@@ -348,6 +348,13 @@ class MemoryManager:
                 result = provider.prefetch(query, session_id=session_id, user_id=user_id)
                 if result and result.strip():
                     parts.append(result)
+            except TypeError:
+                try:
+                    result = provider.prefetch(query, session_id=session_id)
+                    if result and result.strip():
+                        parts.append(result)
+                except Exception as e:
+                    logger.debug("Memory provider '%s' prefetch failed (non-fatal): %s", provider.name, e)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
@@ -360,6 +367,11 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 provider.queue_prefetch(query, session_id=session_id, user_id=user_id)
+            except TypeError:
+                try:
+                    provider.queue_prefetch(query, session_id=session_id)
+                except Exception as e:
+                    logger.debug("Memory provider '%s' queue_prefetch failed (non-fatal): %s", provider.name, e)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
@@ -373,6 +385,11 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 provider.sync_turn(user_content, assistant_content, session_id=session_id, user_id=user_id)
+            except TypeError:
+                try:
+                    provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                except Exception as e:
+                    logger.warning("Memory provider '%s' sync_turn failed: %s", provider.name, e)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",
