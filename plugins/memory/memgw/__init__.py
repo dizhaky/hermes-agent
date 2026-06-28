@@ -451,6 +451,7 @@ class MemGatewayProvider(MemoryProvider):
             return json.dumps(
                 {'error': 'Memory Gateway temporarily unavailable; will retry automatically.'}
             )
+        user_id = kwargs.get("user_id") or ""
         try:
             client = self._get_client()
         except Exception as e:
@@ -462,7 +463,7 @@ class MemGatewayProvider(MemoryProvider):
                 if not query:
                     return tool_error('Missing required parameter: query')
                 limit = min(int(args.get('limit', self._recall_limit)), 50)
-                payload = client.call_tool('recall', {'query': query, 'limit': limit, **self._user_scope()})
+                payload = client.call_tool('recall', {'query': query, 'limit': limit, **self._user_scope(user_id)})
                 self._record_success()
                 return json.dumps(payload)
 
@@ -472,7 +473,7 @@ class MemGatewayProvider(MemoryProvider):
                 if not content or not title:
                     return tool_error('Missing required parameters: content, title')
                 mtype = args.get('memory_type', 'memory')
-                payload = self._retain(content, title, mtype)
+                payload = self._retain(content, title, mtype, user_id=user_id)
                 self._record_success()
                 return json.dumps(payload)
 
@@ -480,7 +481,7 @@ class MemGatewayProvider(MemoryProvider):
                 query = args.get('query', '')
                 if not query:
                     return tool_error('Missing required parameter: query')
-                payload = client.call_tool('reflect', {'query': query, **self._user_scope()})
+                payload = client.call_tool('reflect', {'query': query, **self._user_scope(user_id)})
                 self._record_success()
                 return json.dumps(payload)
         except Exception as e:

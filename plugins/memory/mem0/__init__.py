@@ -308,6 +308,10 @@ class Mem0MemoryProvider(MemoryProvider):
                 "error": "Mem0 API temporarily unavailable (multiple consecutive failures). Will retry automatically."
             })
 
+        effective_user_id = kwargs.get("user_id") or self._user_id
+        read_filters = {"user_id": effective_user_id}
+        write_filters = {"user_id": effective_user_id, "agent_id": self._agent_id}
+
         try:
             client = self._get_client()
         except Exception as e:
@@ -315,7 +319,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
         if tool_name == "mem0_profile":
             try:
-                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+                memories = self._unwrap_results(client.get_all(filters=read_filters))
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -334,7 +338,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 results = self._unwrap_results(client.search(
                     query=query,
-                    filters=self._read_filters(),
+                    filters=read_filters,
                     rerank=rerank,
                     top_k=top_k,
                 ))
@@ -354,7 +358,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
-                    **self._write_filters(),
+                    **write_filters,
                     infer=False,
                 )
                 self._record_success()

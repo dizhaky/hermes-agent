@@ -427,6 +427,22 @@ class MemoryManager:
             )
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
+    def sync_user_id(self, user_id: str) -> None:
+        """Refresh provider identity after a cached gateway agent serves a new caller."""
+        uid = str(user_id or "").strip()
+        if not uid:
+            return
+        for provider in self._providers:
+            if hasattr(provider, "_user_id"):
+                try:
+                    provider._user_id = uid
+                except Exception as e:
+                    logger.debug(
+                        "Memory provider '%s' sync_user_id failed: %s",
+                        provider.name,
+                        e,
+                    )
+
     # -- Lifecycle hooks -----------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:

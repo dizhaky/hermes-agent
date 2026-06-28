@@ -1590,7 +1590,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 pass
         return result
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
-        return agent._memory_manager.handle_tool_call(function_name, function_args)
+        return agent._memory_manager.handle_tool_call(
+            function_name,
+            function_args,
+            user_id=getattr(agent, "_user_id", "") or "",
+        )
     elif function_name == "clarify":
         from tools.clarify_tool import clarify_tool as _clarify_tool
         return _clarify_tool(

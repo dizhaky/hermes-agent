@@ -16371,6 +16371,8 @@ class GatewayRunner:
                         agent._chat_name = source.chat_name or ''
                         agent._chat_type = source.chat_type or ''
                         agent._thread_id = source.thread_id or ''
+                        if agent._memory_manager:
+                            agent._memory_manager.sync_user_id(agent._user_id)
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:

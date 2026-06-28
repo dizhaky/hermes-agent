@@ -25,6 +25,7 @@ class RecordingProvider(MemoryProvider):
         self._name = name
         self._init_kwargs = {}
         self._init_session_id = None
+        self._user_id = ""
 
     @property
     def name(self) -> str:
@@ -36,6 +37,7 @@ class RecordingProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._init_session_id = session_id
         self._init_kwargs = dict(kwargs)
+        self._user_id = kwargs.get("user_id", "")
 
     def system_prompt_block(self) -> str:
         return ""
@@ -357,4 +359,39 @@ class TestAIAgentUserIdPropagation:
             agent._user_id = None
             assert agent._user_id is None
 
+
+class TestSharedThreadMemoryScoping:
+    """Cached gateway agents must not leak memory tool scope across users."""
+
+    def test_sync_user_id_updates_provider(self):
+        mgr = MemoryManager()
+        p = RecordingProvider("memgw")
+        mgr.add_provider(p)
+        mgr.initialize_all(session_id="sess", platform="slack", user_id="alice")
+
+        mgr.sync_user_id("bob")
+        assert p._user_id == "bob"
+
+    def test_mem0_tool_call_uses_kwargs_user_id(self):
+        from plugins.memory.mem0 import Mem0MemoryProvider
+
+        provider = Mem0MemoryProvider()
+        with patch("plugins.memory.mem0._load_config", return_value={
+            "api_key": "test-key",
+            "user_id": "alice",
+            "agent_id": "hermes",
+            "rerank": True,
+        }):
+            provider.initialize(session_id="sess", user_id="alice")
+
+        mock_client = MagicMock()
+        mock_client.search.return_value = {"results": []}
+        with patch.object(provider, "_get_client", return_value=mock_client):
+            provider.handle_tool_call(
+                "mem0_search",
+                {"query": "secrets"},
+                user_id="bob",
+            )
+
+        assert mock_client.search.call_args.kwargs["filters"] == {"user_id": "bob"}
 
