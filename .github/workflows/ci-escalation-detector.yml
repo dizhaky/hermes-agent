@@ -162,6 +162,7 @@ jobs:
     name: Manual Escalation Available
     runs-on: ubuntu-latest
     if: always()
+    permissions: {}
     steps:
       - name: Escalation Information
         run: |
