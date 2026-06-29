@@ -34,8 +34,13 @@ jobs:
 
           # Determine which PRs to process
           if [ -n "${{ github.event.inputs.pull_request_number }}" ]; then
-            # Manual trigger with specific PR
-            PR_NUMBERS="${{ github.event.inputs.pull_request_number }}"
+            # Manual trigger with specific PR - validate input (must be numeric)
+            INPUT="${{ github.event.inputs.pull_request_number }}"
+            if ! echo "$INPUT" | grep -qE '^[0-9]( [0-9])*$'; then
+              echo "Error: Invalid PR number format. Must be numeric, space-separated."
+              exit 1
+            fi
+            PR_NUMBERS="$INPUT"
           elif [ -n "${{ github.event.pull_request.number }}" ]; then
             # Automatic trigger from PR event
             PR_NUMBERS="${{ github.event.pull_request.number }}"

@@ -1,25 +1,21 @@
 name: CI Auto-Fix
 
 on:
-  workflow_run:
-    workflows:
-      - 'Lint'
-    types:
-      - completed
   pull_request:
     types:
       - opened
       - synchronize
 
 concurrency:
-  group: auto-fix-${{ github.event.pull_request.number || github.run_id }}
+  group: auto-fix-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   auto-fix-issues:
     name: Auto-Fix Linting & Formatting Issues
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event.workflow_run.conclusion == 'failure'
+    # Only run on PRs from the same repository (not forks)
+    if: github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: write
       pull-requests: write
@@ -27,7 +23,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
