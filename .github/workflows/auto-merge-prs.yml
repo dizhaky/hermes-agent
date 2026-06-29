@@ -9,6 +9,12 @@ on:
   pull_request_review:
     types:
       - submitted
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: 'Pull request number (leave empty to enable on all open PRs)'
+        required: false
+        type: string
 
 concurrency:
   group: auto-merge-${{ github.event.pull_request.number }}
@@ -22,26 +28,51 @@ jobs:
       pull-requests: write
       contents: read
     steps:
-      - name: Enable auto-merge for pull request
+      - name: Enable auto-merge for pull request(s)
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
           REPO=${{ github.repository }}
 
-          # Check if PR is already merged or closed
-          PR_STATE=$(gh pr view $PR_NUMBER --repo $REPO --json state --jq '.state')
+          # Determine which PRs to process
+          if [ -n "${{ github.event.inputs.pull_request_number }}" ]; then
+            # Manual trigger with specific PR
+            PR_NUMBERS="${{ github.event.inputs.pull_request_number }}"
+          elif [ -n "${{ github.event.pull_request.number }}" ]; then
+            # Automatic trigger from PR event
+            PR_NUMBERS="${{ github.event.pull_request.number }}"
+          else
+            # Manual trigger without PR number - enable on all open PRs
+            echo "Fetching all open PRs..."
+            PR_NUMBERS=$(gh pr list --repo $REPO --state open --json number --jq '.[].number' | tr '\n' ' ')
+          fi
 
-          if [ "$PR_STATE" = "MERGED" ] || [ "$PR_STATE" = "CLOSED" ]; then
-            echo "PR is already $PR_STATE, skipping auto-merge"
+          if [ -z "$PR_NUMBERS" ]; then
+            echo "No PRs to process"
             exit 0
           fi
 
-          # Enable auto-merge with squash merge strategy
-          gh pr merge $PR_NUMBER \
-            --repo $REPO \
-            --auto \
-            --squash \
-            --delete-branch || true
+          echo "Processing PRs: $PR_NUMBERS"
 
-          echo "Auto-merge enabled for PR #$PR_NUMBER"
+          for PR_NUMBER in $PR_NUMBERS; do
+            echo "Processing PR #$PR_NUMBER..."
+
+            # Check if PR is already merged or closed
+            PR_STATE=$(gh pr view $PR_NUMBER --repo $REPO --json state --jq '.state')
+
+            if [ "$PR_STATE" = "MERGED" ] || [ "$PR_STATE" = "CLOSED" ]; then
+              echo "  PR #$PR_NUMBER is already $PR_STATE, skipping"
+              continue
+            fi
+
+            # Enable auto-merge with squash merge strategy
+            if gh pr merge $PR_NUMBER \
+              --repo $REPO \
+              --auto \
+              --squash \
+              --delete-branch 2>/dev/null; then
+              echo "  ✓ Auto-merge enabled for PR #$PR_NUMBER"
+            else
+              echo "  ✗ Failed to enable auto-merge for PR #$PR_NUMBER (may already have auto-merge enabled)"
+            fi
+          done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
