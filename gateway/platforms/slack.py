@@ -1828,6 +1828,30 @@ class SlackAdapter(BasePlatformAdapter):
         # Mark as metadata-tagged so downstream can identify source.
         normalized["_metadata_event_type"] = event_type
 
+        # Fetch the original message text via conversations_history.
+        # Metadata events carry channel_id/message_ts/metadata but no text field,
+        # so _handle_slack_message would build a MessageEvent with text="" and the
+        # agent gets triggered with empty content.  Best-effort: if the API call
+        # fails, proceed with empty text rather than dropping the event entirely.
+        if not normalized.get("text") and normalized.get("channel") and normalized.get("ts"):
+            try:
+                resp = await self._app.client.conversations_history(
+                    channel=normalized["channel"],
+                    latest=normalized.get("ts"),
+                    limit=1,
+                    inclusive=True,
+                )
+                msgs = resp.get("messages", [])
+                if msgs:
+                    normalized["text"] = msgs[0].get("text", "")
+                    # Also pick up any blocks/attachments if present
+                    for key in ("blocks", "attachments"):
+                        if key in msgs[0] and key not in normalized:
+                            normalized[key] = msgs[0][key]
+            except Exception:
+                # Best-effort; proceed with empty text rather than crashing
+                pass
+
         # Use a metadata-specific dedup key to prevent the normal message event
         # (which shares the same ts) from pre-empting this path. When an
         # unmentioned channel message arrives, Slack fires both a normal
@@ -1837,12 +1861,18 @@ class SlackAdapter(BasePlatformAdapter):
         # the metadata event would be deduped out before bypass_filters=True
         # can route it.
         #
+        # We also include the Slack event type name and event_ts so that
+        # message_metadata_posted and message_metadata_updated events for the
+        # same message do NOT collide: without event_ts in the key, the updated
+        # event would be dropped as a duplicate of posted within the 300s window.
+        #
         # We pass a separate dedup_key rather than mutating normalized["ts"] so
         # that the real ts value remains intact for Slack reply threading
         # (chat_postMessage uses thread_ts=event["ts"], and sending
         # thread_ts='meta:<ts>' causes Slack to reject the call).
-        real_ts = normalized.get("ts") or normalized.get("message_ts", "")
-        meta_dedup_key = f"meta:{real_ts}" if real_ts else None
+        event_type_name = event.get("type", "message_metadata")
+        event_ts = event.get("event_ts", event.get("ts", ""))
+        meta_dedup_key = f"meta:{event_type_name}:{event_ts}" if event_ts else None
 
         # Bypass bot/mention gates — the metadata tag is the addressing signal.
         await self._handle_slack_message(

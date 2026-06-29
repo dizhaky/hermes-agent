@@ -93,6 +93,9 @@ def _pid_is_alive(pid: int) -> bool:
         return True  # PID exists but we lack permission to signal it
 
 
+_HERMES_CMDLINE_PATTERNS = ["hermes_cli.main", "hermes_cli/main", "hermes-agent", "hermes"]
+
+
 def _pid_is_gateway(pid: int, argv: list, start_time: Optional[int]) -> bool:
     """Check PID exists and belongs to the gateway process (not a reused PID).
 
@@ -114,13 +117,34 @@ def _pid_is_gateway(pid: int, argv: list, start_time: Optional[int]) -> bool:
         try:
             with open(cmdline_path, "rb") as f:
                 cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ").strip()
-            # Check if the process command matches the recorded argv[0]
-            if argv:
-                expected = argv[0]
-                if expected not in cmdline:
-                    return False  # PID reuse — different process
+            # Check if any hermes-identifying pattern appears in the cmdline.
+            # When the gateway runs as a systemd service, argv[0] in the state
+            # file may be the resolved path (e.g. /usr/lib/python3.x/.../main.py)
+            # while /proc/<pid>/cmdline contains "python -m hermes_cli.main
+            # gateway run". A direct argv[0] substring match would fail, so we
+            # check for known hermes patterns instead.
+            cmdline_lower = cmdline.lower()
+            is_hermes_process = any(p in cmdline_lower for p in _HERMES_CMDLINE_PATTERNS)
+            if not is_hermes_process:
+                return False  # PID reuse — unrelated process
         except OSError:
             pass
+
+    # Check process state — reject stopped/traced processes.
+    # os.kill(pid, 0) succeeds even for SIGSTOP'd processes, and a stopped
+    # gateway cannot process messages despite appearing alive.
+    status_path = f"/proc/{pid}/status"
+    if os.path.exists(status_path):
+        try:
+            with open(status_path) as f:
+                for line in f:
+                    if line.startswith("State:"):
+                        state_char = line.split()[1]  # e.g. "S", "R", "T", "t", "Z"
+                        if state_char in ("T", "t"):
+                            return False  # Stopped or traced — cannot process messages
+                        break
+        except OSError:
+            pass  # Can't read status, assume alive
 
     # On macOS/other: if start_time is available, try to compare uptime
     # (This is a best-effort check; /proc is Linux-only)
