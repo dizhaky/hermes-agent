@@ -102,9 +102,11 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "message.channels",
                     "message.groups",
                     "message.im",
+                    "message_metadata_posted",
+                    "message_metadata_updated",
                 ],
-                "message_metadata_events": [
-                    "messages:hermes",
+                "metadata_subscriptions": [
+                    {"event_type": "messages:hermes"},
                 ],
             },
             "interactivity": {

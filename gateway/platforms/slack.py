@@ -1781,7 +1781,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Handle Slack message_metadata_posted / message_metadata_updated events.
 
         Slack fires these events when a message carrying a custom metadata event
-        type (listed under ``message_metadata_events`` in the app manifest) is
+        type (listed under ``metadata_subscriptions`` in the app manifest) is
         posted or updated.  The metadata payload is in ``event.metadata`` with
         the shape::
 
@@ -1794,28 +1794,52 @@ class SlackAdapter(BasePlatformAdapter):
         the normal message pipeline.  The raw metadata is attached to the
         reconstructed event so downstream handlers (tools, skills) can inspect
         it if needed.
+
+        Metadata events use different field names than normal message events:
+        - ``channel_id`` instead of ``channel``
+        - ``user_id`` instead of ``user``
+        - ``message_ts`` for the message timestamp (``ts`` in normal events)
+        - ``event_ts`` for the event timestamp
+        - No ``text`` field (text lives on the original message)
+
+        We normalize these to the standard message event shape before forwarding,
+        and bypass the bot/mention gates since the metadata tag itself is the
+        addressing signal.
         """
         metadata_payload = event.get("metadata") or {}
         event_type = metadata_payload.get("event_type", "")
         logger.debug(
             "[Slack] message_metadata event: type=%s channel=%s ts=%s",
             event_type,
-            event.get("channel", ""),
+            event.get("channel_id", event.get("channel", "")),
             event.get("message_ts", event.get("ts", "")),
         )
-        # Normalise: message_metadata events use ``message_ts`` for the
-        # message timestamp; the message handler expects ``ts``.
-        normalised = dict(event)
-        if "message_ts" in normalised and "ts" not in normalised:
-            normalised["ts"] = normalised["message_ts"]
 
-        # Attach the decoded metadata event_type as a convenience key.
-        normalised["_metadata_event_type"] = event_type
+        # Normalize metadata event fields to standard message event shape.
+        # Metadata events use channel_id/user_id instead of channel/user.
+        normalized = dict(event)
+        if "channel_id" in normalized and "channel" not in normalized:
+            normalized["channel"] = normalized["channel_id"]
+        if "user_id" in normalized and "user" not in normalized:
+            normalized["user"] = normalized["user_id"]
+        # message_ts is the message timestamp; ensure ts is set for the pipeline.
+        if "message_ts" in normalized and "ts" not in normalized:
+            normalized["ts"] = normalized["message_ts"]
+        # Mark as metadata-tagged so downstream can identify source.
+        normalized["_metadata_event_type"] = event_type
 
-        await self._handle_slack_message(normalised)
+        # Bypass bot/mention gates — the metadata tag is the addressing signal.
+        await self._handle_slack_message(normalized, bypass_filters=True)
 
-    async def _handle_slack_message(self, event: dict) -> None:
-        """Handle an incoming Slack message event."""
+    async def _handle_slack_message(self, event: dict, bypass_filters: bool = False) -> None:
+        """Handle an incoming Slack message event.
+
+        Args:
+            event: The Slack event dict (may be normalized from a metadata event).
+            bypass_filters: When True, skip bot-filtering and mention-gating.
+                Used by ``_handle_message_metadata_event`` so that metadata-tagged
+                messages are always routed regardless of sender type or mention status.
+        """
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
@@ -1825,7 +1849,8 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        # Skipped when bypass_filters=True (e.g. metadata-tagged messages).
+        if not bypass_filters and (event.get("bot_id") or event.get("subtype") == "bot_message"):
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -2012,7 +2037,7 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
-        if not is_dm and bot_uid:
+        if not is_dm and bot_uid and not bypass_filters:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
