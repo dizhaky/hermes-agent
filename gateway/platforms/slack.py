@@ -1828,6 +1828,16 @@ class SlackAdapter(BasePlatformAdapter):
         # Mark as metadata-tagged so downstream can identify source.
         normalized["_metadata_event_type"] = event_type
 
+        # Use a metadata-specific dedup key to prevent the normal message event
+        # (which shares the same ts) from pre-empting this path. When an
+        # unmentioned channel message arrives, Slack fires both a normal
+        # message.channels event AND a message_metadata_posted event with the
+        # same ts. The normal event is processed first: ts is recorded in the
+        # dedup cache, then the mention gate drops it. Without a distinct key,
+        # the metadata event would be deduped out before bypass_filters=True
+        # can route it.
+        normalized["ts"] = f"meta:{normalized.get('ts', normalized.get('message_ts', ''))}"
+
         # Bypass bot/mention gates — the metadata tag is the addressing signal.
         await self._handle_slack_message(normalized, bypass_filters=True)
 
@@ -2037,37 +2047,41 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
-        if not is_dm and bot_uid and not bypass_filters:
-            # Check allowed channels — if set, only respond in these channels (whitelist)
+        if not is_dm and bot_uid:
+            # Check allowed channels — always enforced regardless of bypass_filters.
+            # The allowlist is a hard gate; even metadata-tagged messages must
+            # originate from permitted channels to reach the agent.
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
                 logger.debug("[Slack] Ignoring message in non-allowed channel: %s", channel_id)
                 return
 
-            if channel_id in self._slack_free_response_channels():
-                pass  # Free-response channel — always process
-            elif not self._slack_require_mention():
-                pass  # Mention requirement disabled globally for Slack
-            elif self._slack_strict_mention() and not is_mentioned:
-                return  # Strict mode: ignore until @-mentioned again
-            elif not is_mentioned:
-                reply_to_bot_thread = (
-                    is_thread_reply and event_thread_ts in self._bot_message_ts
-                )
-                in_mentioned_thread = (
-                    event_thread_ts is not None
-                    and event_thread_ts in self._mentioned_threads
-                )
-                has_session = (
-                    is_thread_reply
-                    and self._has_active_session_for_thread(
-                        channel_id=channel_id,
-                        thread_ts=event_thread_ts,
-                        user_id=user_id,
+            # Bot filter and mention gate — skipped when routing via metadata tag.
+            if not bypass_filters:
+                if channel_id in self._slack_free_response_channels():
+                    pass  # Free-response channel — always process
+                elif not self._slack_require_mention():
+                    pass  # Mention requirement disabled globally for Slack
+                elif self._slack_strict_mention() and not is_mentioned:
+                    return  # Strict mode: ignore until @-mentioned again
+                elif not is_mentioned:
+                    reply_to_bot_thread = (
+                        is_thread_reply and event_thread_ts in self._bot_message_ts
                     )
-                )
-                if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
-                    return
+                    in_mentioned_thread = (
+                        event_thread_ts is not None
+                        and event_thread_ts in self._mentioned_threads
+                    )
+                    has_session = (
+                        is_thread_reply
+                        and self._has_active_session_for_thread(
+                            channel_id=channel_id,
+                            thread_ts=event_thread_ts,
+                            user_id=user_id,
+                        )
+                    )
+                    if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                        return
 
         if is_mentioned:
             # Strip the bot mention from the text

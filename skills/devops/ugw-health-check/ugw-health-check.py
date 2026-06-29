@@ -21,6 +21,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
@@ -32,7 +33,7 @@ _DEGRADED_STATES = {"degraded"}
 # Everything else (starting, draining, stopped, startup_failed) is CRITICAL
 
 
-def _read_state() -> dict | None:
+def _read_state() -> Optional[dict]:
     """Read and parse gateway_state.json, returning None on any failure."""
     if not _STATE_FILE.exists():
         return None
@@ -49,7 +50,7 @@ def _read_state() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _format_uptime(start_time: int | None) -> str:
+def _format_uptime(start_time: Optional[int]) -> str:
     """Return a human-readable uptime string, or 'unknown' if unavailable."""
     if start_time is None:
         return "unknown"
@@ -60,7 +61,7 @@ def _format_uptime(start_time: int | None) -> str:
     return f"start_time tick={start_time}"
 
 
-def _format_uptime_from_updated(updated_at: str | None) -> str:
+def _format_uptime_from_updated(updated_at: Optional[str]) -> str:
     """Return a human-readable age from an ISO timestamp string."""
     if not updated_at:
         return "unknown"
@@ -79,6 +80,17 @@ def _format_uptime_from_updated(updated_at: str | None) -> str:
             return f"{seconds}s"
     except (ValueError, TypeError):
         return "unknown"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Check if a process with the given PID is alive using signal 0."""
+    try:
+        os.kill(pid, 0)  # signal 0 = check existence without sending a signal
+        return True
+    except ProcessLookupError:
+        return False  # PID does not exist
+    except PermissionError:
+        return True  # PID exists but we lack permission to signal it
 
 
 def _format_platforms(platforms: dict) -> str:
@@ -111,6 +123,16 @@ def main() -> int:
 
     platform_summary = _format_platforms(platforms)
     uptime = _format_uptime_from_updated(updated_at)
+
+    # Verify the recorded PID is actually alive. A SIGKILL or OOM kill leaves
+    # a stale gateway_state file reporting "running" even though the process
+    # is gone. Checking os.kill(pid, 0) catches this before we return OK.
+    if pid and not _pid_is_alive(pid):
+        print("Unified Gateway CRITICAL")
+        print(f"Status: CRITICAL (process dead — stale state file, PID {pid} not running)")
+        print(f"Last updated: {uptime} ago")
+        print(f"Platforms: {platform_summary}")
+        return 1
 
     if gateway_state in _HEALTHY_STATES:
         print("Unified Gateway OK")
