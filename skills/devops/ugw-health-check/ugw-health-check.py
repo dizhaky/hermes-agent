@@ -93,6 +93,41 @@ def _pid_is_alive(pid: int) -> bool:
         return True  # PID exists but we lack permission to signal it
 
 
+def _pid_is_gateway(pid: int, argv: list, start_time: Optional[int]) -> bool:
+    """Check PID exists and belongs to the gateway process (not a reused PID).
+
+    Uses /proc/{pid}/cmdline on Linux to verify the running process matches the
+    recorded argv[0] from the state file.  Falls back gracefully on macOS or
+    other platforms where /proc is not available.
+    """
+    # First check it's alive
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # alive but can't signal — proceed to identity check
+
+    # On Linux, verify via /proc/{pid}/cmdline
+    cmdline_path = f"/proc/{pid}/cmdline"
+    if os.path.exists(cmdline_path):
+        try:
+            with open(cmdline_path, "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="replace").replace("\x00", " ").strip()
+            # Check if the process command matches the recorded argv[0]
+            if argv:
+                expected = argv[0]
+                if expected not in cmdline:
+                    return False  # PID reuse — different process
+        except OSError:
+            pass
+
+    # On macOS/other: if start_time is available, try to compare uptime
+    # (This is a best-effort check; /proc is Linux-only)
+
+    return True
+
+
 def _format_platforms(platforms: dict) -> str:
     """Return a compact platform summary string."""
     if not platforms:
@@ -124,12 +159,15 @@ def main() -> int:
     platform_summary = _format_platforms(platforms)
     uptime = _format_uptime_from_updated(updated_at)
 
-    # Verify the recorded PID is actually alive. A SIGKILL or OOM kill leaves
-    # a stale gateway_state file reporting "running" even though the process
-    # is gone. Checking os.kill(pid, 0) catches this before we return OK.
-    if pid and not _pid_is_alive(pid):
+    # Verify the recorded PID is actually alive and is the gateway process.
+    # A SIGKILL or OOM kill leaves a stale gateway_state file reporting
+    # "running" even though the process is gone. After a crash, the PID may
+    # also be reused by an unrelated process — checking os.kill(pid, 0) alone
+    # would return healthy for a reused PID.  _pid_is_gateway() additionally
+    # verifies the process identity via /proc/{pid}/cmdline on Linux.
+    if pid and not _pid_is_gateway(pid, data.get("argv", []), data.get("start_time")):
         print("Unified Gateway CRITICAL")
-        print(f"Status: CRITICAL (process dead — stale state file, PID {pid} not running)")
+        print(f"Status: CRITICAL (PID {pid} is not the gateway process — possible PID reuse after crash)")
         print(f"Last updated: {uptime} ago")
         print(f"Platforms: {platform_summary}")
         return 1

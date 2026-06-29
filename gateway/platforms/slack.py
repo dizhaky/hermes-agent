@@ -1836,12 +1836,27 @@ class SlackAdapter(BasePlatformAdapter):
         # dedup cache, then the mention gate drops it. Without a distinct key,
         # the metadata event would be deduped out before bypass_filters=True
         # can route it.
-        normalized["ts"] = f"meta:{normalized.get('ts', normalized.get('message_ts', ''))}"
+        #
+        # We pass a separate dedup_key rather than mutating normalized["ts"] so
+        # that the real ts value remains intact for Slack reply threading
+        # (chat_postMessage uses thread_ts=event["ts"], and sending
+        # thread_ts='meta:<ts>' causes Slack to reject the call).
+        real_ts = normalized.get("ts") or normalized.get("message_ts", "")
+        meta_dedup_key = f"meta:{real_ts}" if real_ts else None
 
         # Bypass bot/mention gates — the metadata tag is the addressing signal.
-        await self._handle_slack_message(normalized, bypass_filters=True)
+        await self._handle_slack_message(
+            normalized,
+            bypass_filters=True,
+            dedup_key=meta_dedup_key,
+        )
 
-    async def _handle_slack_message(self, event: dict, bypass_filters: bool = False) -> None:
+    async def _handle_slack_message(
+        self,
+        event: dict,
+        bypass_filters: bool = False,
+        dedup_key: Optional[str] = None,
+    ) -> None:
         """Handle an incoming Slack message event.
 
         Args:
@@ -1849,10 +1864,17 @@ class SlackAdapter(BasePlatformAdapter):
             bypass_filters: When True, skip bot-filtering and mention-gating.
                 Used by ``_handle_message_metadata_event`` so that metadata-tagged
                 messages are always routed regardless of sender type or mention status.
+            dedup_key: Optional override for the dedup cache key.  When set, this
+                key is used for dedup lookup/storage instead of ``event["ts"]``.
+                Used by ``_handle_message_metadata_event`` so that the metadata event
+                (which shares ``ts`` with the normal message event) gets its own
+                distinct dedup slot without mutating the ``ts`` field that Slack uses
+                for reply threading.
         """
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
-        if event_ts and self._dedup.is_duplicate(event_ts):
+        _dedup_key = dedup_key or event_ts
+        if _dedup_key and self._dedup.is_duplicate(_dedup_key):
             return
 
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
