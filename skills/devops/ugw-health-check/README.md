@@ -4,7 +4,7 @@ A standalone health check script for the Hermes Unified Gateway (UGW).
 
 ## After Install
 
-Hermes automatically syncs this skill to `~/.hermes/skills/ugw-health-check/` on next startup. To activate it for the UGW Health Monitor cron job, copy or symlink the script:
+Hermes automatically syncs this skill to `~/.hermes/skills/devops/ugw-health-check/` on next startup. To activate it for the UGW Health Monitor cron job, copy or symlink the script:
 
 ```bash
 # Copy (simple)
