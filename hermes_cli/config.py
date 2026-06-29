@@ -4610,7 +4610,7 @@ def config_write_lock():
     """
     lock_path = get_config_lock_path()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_file = open(lock_path, "a+")  # noqa: WPS515 — intentional keep-open
+    lock_file = open(lock_path, "a+", encoding="utf-8")  # noqa: WPS515 — intentional keep-open
     try:
         _acquire_config_lock(lock_file, exclusive=True)
         yield
@@ -4639,7 +4639,7 @@ def config_read_lock():
         return
     if not lock_path.exists():
         lock_path.touch()
-    lock_file = open(lock_path, "r")
+    lock_file = open(lock_path, "r", encoding="utf-8")
     try:
         _acquire_config_lock(lock_file, exclusive=False)
         yield
