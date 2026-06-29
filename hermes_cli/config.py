@@ -23,20 +23,23 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types as _types
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+_fcntl: _types.ModuleType | None
 try:
     import fcntl as _fcntl
 except ImportError:
-    _fcntl = None  # type: ignore[assignment]
+    _fcntl = None
 
+_msvcrt: _types.ModuleType | None
 try:
     import msvcrt as _msvcrt
 except ImportError:
-    _msvcrt = None  # type: ignore[assignment]
+    _msvcrt = None
 
 logger = logging.getLogger(__name__)
 
