@@ -1,0 +1,47 @@
+name: Auto-Merge Pull Requests
+
+on:
+  pull_request:
+    types:
+      - opened
+      - ready_for_review
+      - reopened
+  pull_request_review:
+    types:
+      - submitted
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  auto-merge:
+    name: Enable Auto-Merge
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Enable auto-merge for pull request
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+
+          # Check if PR is already merged or closed
+          PR_STATE=$(gh pr view $PR_NUMBER --repo $REPO --json state --jq '.state')
+
+          if [ "$PR_STATE" = "MERGED" ] || [ "$PR_STATE" = "CLOSED" ]; then
+            echo "PR is already $PR_STATE, skipping auto-merge"
+            exit 0
+          fi
+
+          # Enable auto-merge with squash merge strategy
+          gh pr merge $PR_NUMBER \
+            --repo $REPO \
+            --auto \
+            --squash \
+            --delete-branch || true
+
+          echo "Auto-merge enabled for PR #$PR_NUMBER"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
