@@ -108,7 +108,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                 ],
                 "metadata_subscriptions": [
                     {
-                        "app_id": "<YOUR_APP_ID>",
+                        "app_id": "*",
                         "event_type": "messages:hermes",
                     }
                 ],

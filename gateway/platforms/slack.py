@@ -622,6 +622,18 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_file_change(event, say):
                 pass
 
+            @self._app.event("message_metadata_posted")
+            async def handle_message_metadata_posted(event, say):
+                pass
+
+            @self._app.event("message_metadata_updated")
+            async def handle_message_metadata_updated(event, say):
+                pass
+
+            @self._app.event("message_metadata_deleted")
+            async def handle_message_metadata_deleted(event, say):
+                pass
+
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
