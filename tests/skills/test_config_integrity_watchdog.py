@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
+import pytest  # type: ignore[import]
 import yaml
 
 SKILL_DIR = (
@@ -108,6 +108,7 @@ class TestStaticChecks:
     def test_frontmatter_hermes_tags(self):
         src = (SKILL_DIR / "SKILL.md").read_text()
         m = re.search(r"^---\n(.*?)\n---", src, re.DOTALL)
+        assert m is not None, "SKILL.md missing YAML frontmatter"
         fm = yaml.safe_load(m.group(1))
         tags = fm.get("metadata", {}).get("hermes", {}).get("tags", [])
         assert "devops" in tags
