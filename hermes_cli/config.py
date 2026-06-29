@@ -4777,7 +4777,7 @@ def restore_config(content: "str | dict[str, Any]", *, reason: str = "") -> Path
     import datetime
 
     config_path = get_config_path()
-    suffix = f"pre-restore-{datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    suffix = f"pre-restore-{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
     if reason:
         suffix = f"{suffix}-{reason}"
     backup_path = config_path.with_name(f"{config_path.name}.{suffix}")
