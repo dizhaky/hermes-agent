@@ -20,6 +20,8 @@ Replace mutable sidecar with git-backed append-only integrity log stored in the 
 | 4 | Implement restore.py | Done |
 | 5 | Write tests | Done |
 | 6 | Open PR | Done |
+| 7 | Add hermes config seal/verify/restore CLI commands | Done |
+| 8 | Write CLI integration tests | Done |
 
 ## Assumptions
 
