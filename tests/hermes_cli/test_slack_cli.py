@@ -45,6 +45,23 @@ class TestSlackFullManifest:
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "assistant_thread_started" in bot_events
 
+    def test_message_metadata_events_included(self):
+        # message_metadata_events enables Slack message tagging support.
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        event_subscriptions = manifest["settings"]["event_subscriptions"]
+        assert "message_metadata_events" in event_subscriptions, (
+            "manifest must declare message_metadata_events for Slack tagging to work"
+        )
+        assert "messages:hermes" in event_subscriptions["message_metadata_events"]
+
+    def test_metadata_read_scope_included(self):
+        # metadata.message:read is required to receive message_metadata events.
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+        assert "metadata.message:read" in bot_scopes
+
 
 class TestRenderManifest:
     def test_json_is_default(self):

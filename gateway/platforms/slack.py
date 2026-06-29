@@ -630,6 +630,19 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
+            # Handle message_metadata_posted and message_metadata_updated events.
+            # These fire when a message tagged with a custom metadata event type
+            # (declared in the manifest's message_metadata_events array) is posted
+            # or updated. We forward them into the standard message pipeline so
+            # the agent can react to tagged messages (e.g. "messages:hermes" tags).
+            @self._app.event("message_metadata_posted")
+            async def handle_message_metadata_posted(event, say):
+                await self._handle_message_metadata_event(event)
+
+            @self._app.event("message_metadata_updated")
+            async def handle_message_metadata_updated(event, say):
+                await self._handle_message_metadata_event(event)
+
             # Register slash command handler(s)
             #
             # Every gateway command from COMMAND_REGISTRY is a native Slack
@@ -1763,6 +1776,43 @@ class SlackAdapter(BasePlatformAdapter):
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
+
+    async def _handle_message_metadata_event(self, event: dict) -> None:
+        """Handle Slack message_metadata_posted / message_metadata_updated events.
+
+        Slack fires these events when a message carrying a custom metadata event
+        type (listed under ``message_metadata_events`` in the app manifest) is
+        posted or updated.  The metadata payload is in ``event.metadata`` with
+        the shape::
+
+            {
+                "event_type": "messages:hermes",
+                "event_payload": { ... }
+            }
+
+        We extract the ``event_type`` tag and forward the underlying message into
+        the normal message pipeline.  The raw metadata is attached to the
+        reconstructed event so downstream handlers (tools, skills) can inspect
+        it if needed.
+        """
+        metadata_payload = event.get("metadata") or {}
+        event_type = metadata_payload.get("event_type", "")
+        logger.debug(
+            "[Slack] message_metadata event: type=%s channel=%s ts=%s",
+            event_type,
+            event.get("channel", ""),
+            event.get("message_ts", event.get("ts", "")),
+        )
+        # Normalise: message_metadata events use ``message_ts`` for the
+        # message timestamp; the message handler expects ``ts``.
+        normalised = dict(event)
+        if "message_ts" in normalised and "ts" not in normalised:
+            normalised["ts"] = normalised["message_ts"]
+
+        # Attach the decoded metadata event_type as a convenience key.
+        normalised["_metadata_event_type"] = event_type
+
+        await self._handle_slack_message(normalised)
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
