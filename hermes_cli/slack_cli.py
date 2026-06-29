@@ -102,6 +102,9 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "message.groups",
                     "message.im",
                 ],
+                "message_metadata_events": [
+                    "messages:hermes",
+                ],
             },
             "interactivity": {
                 "is_enabled": True,
