@@ -3,6 +3,9 @@
 
 Reads the sealed hash and config path from the integrity log,
 restores the config from the dotfiles repo, then re-seals.
+
+Note: restoration uses git HEAD of the dotfiles repo. If the tampered config
+was committed to dotfiles, the committed tampered version will be restored.
 """
 import hashlib
 import json

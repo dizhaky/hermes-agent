@@ -61,12 +61,29 @@ def _import_core():
     We add the skill directory to sys.path on first use rather than at
     module-import time so that the import stays lazy (fast startup) and
     doesn't conflict with any top-level package names.
+
+    Search order:
+    1. ``~/.hermes/skills/devops/config-integrity-watchdog`` (post-sync location)
+    2. Repo-relative ``skills/devops/config-integrity-watchdog`` (pre-sync / dev)
     """
-    skills_root = Path(__file__).resolve().parents[1] / "skills" / "devops" / "config-integrity-watchdog"
-    if str(skills_root) not in sys.path:
-        sys.path.insert(0, str(skills_root))
-    import config_integrity  # noqa: PLC0415
-    return config_integrity
+    candidates = [
+        Path.home() / ".hermes" / "skills" / "devops" / "config-integrity-watchdog",
+        Path(__file__).parent.parent / "skills" / "devops" / "config-integrity-watchdog",
+    ]
+    for skills_root in candidates:
+        if skills_root.exists():
+            if str(skills_root) not in sys.path:
+                sys.path.insert(0, str(skills_root))
+            try:
+                import config_integrity  # noqa: PLC0415
+                return config_integrity
+            except ImportError:
+                continue
+    print(
+        "ERROR: config-integrity-watchdog skill not found. "
+        "Run 'hermes skills sync' first."
+    )
+    sys.exit(1)
 
 
 def cmd_seal(args: argparse.Namespace) -> int:
