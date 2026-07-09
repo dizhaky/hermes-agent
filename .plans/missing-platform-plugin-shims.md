@@ -48,7 +48,7 @@ print(sorted(e.name for e in platform_registry.all_entries()))
 # telegram/slack/matrix/whatsapp/email/sms/wecom/feishu are absent
 ```
 
-Two test files currently fail because of this (both pre-existing failures,
+Test files currently failing because of this (all pre-existing failures,
 not caused by this cleanup pass):
 
 - `tests/hermes_cli/test_gateway_platform_gating.py` —
@@ -60,6 +60,18 @@ not caused by this cleanup pass):
   `test_setup_gateway_in_container_shows_docker_guidance` (both rely on
   Matrix showing as "configured" in the picker so `setup_gateway()` reaches
   its "Messaging platforms configured!" branch)
+- `tests/hermes_cli/test_setup_openclaw_migration.py::TestGetSectionConfigSummary` —
+  `test_gateway_lists_platforms` (expects "Telegram" in the openclaw-migration
+  config summary; only "Discord" shows), `test_gateway_recognises_whatsapp_enabled`
+  (WhatsApp isn't recognized at all, summary is `None`)
+- `tests/gateway/test_setup_feishu.py` — all 14 tests fail with
+  `ImportError: cannot import name '_setup_feishu' from 'hermes_cli.gateway'`.
+  This one's slightly different: the function itself (not just the picker
+  metadata) was removed from `gateway.py` with a comment claiming it "moved to
+  plugins/platforms/feishu/adapter.py::interactive_setup" — that function
+  doesn't exist anywhere either. Whichever option below is chosen for Feishu
+  needs to restore an `interactive_setup`-equivalent entry point, not just a
+  `register()` metadata shim.
 
 ## Options considered (not yet decided)
 
