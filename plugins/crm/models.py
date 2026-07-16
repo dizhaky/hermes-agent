@@ -15,7 +15,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 
 InteractionKind = Literal["call", "email", "meeting", "message", "note", "other"]
@@ -317,7 +317,7 @@ class Interaction:
                 "Interaction.kind must be one of: "
                 + ", ".join(sorted(VALID_INTERACTION_KINDS))
             )
-        self.kind = kind  # type: ignore[assignment]
+        self.kind = cast(InteractionKind, kind)
         occurred = _parse_datetime(self.occurred_at)
         if occurred is None:
             raise ValueError("Interaction.occurred_at is required.")
