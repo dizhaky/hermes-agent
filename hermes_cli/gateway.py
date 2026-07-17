@@ -2704,7 +2704,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2741,7 +2741,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -5982,17 +5982,25 @@ def _builtin_setup_fn(key: str):
     from hermes_cli import setup as _s
 
     return {
-        # telegram moved into the plugin: setup_fn registered by
-        # plugins/platforms/telegram/adapter.py::register(). #41112.
         # discord moved into the plugin: setup_fn is registered by
         # plugins/platforms/discord/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
-        # slack moved into the plugin: setup_fn is registered by
-        # plugins/platforms/slack/adapter.py::register() and dispatched
-        # via the plugin path in _configure_platform(). #41112.
-        # matrix never actually moved to a plugin — the bespoke flow still
-        # lives in hermes_cli/setup.py, so dispatch it directly.
+        #
+        # telegram, slack, and matrix are built-in (not plugin-migrated —
+        # see the _PLATFORMS NOTE above). They keep their bespoke setup
+        # flows here because the generic _setup_standard_platform fallback
+        # treats the first `vars` entry (token_var) as mandatory and aborts
+        # the whole wizard if it's left empty. That breaks Matrix's
+        # documented "leave the access token empty for password login"
+        # path outright, and loses Telegram's token-format validation and
+        # Slack's manifest-regeneration prompt.
+        "telegram": _s._setup_telegram,
+        "slack": _s._setup_slack,
         "matrix": _s._setup_matrix,
+        # feishu is likewise built-in: plugins/platforms/feishu/ was never
+        # created, so its bespoke flow (QR scan-to-create + manual path)
+        # lives above in this module.
+        "feishu": _setup_feishu,
         # mattermost moved into the plugin: setup_fn is registered by
         # plugins/platforms/mattermost/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
@@ -6003,9 +6011,8 @@ def _builtin_setup_fn(key: str):
         # plugins/platforms/{whatsapp,dingtalk}/adapter.py::register() and
         # dispatched via the plugin path in _configure_platform(). #41112.
         "weixin": _setup_weixin,
-        # feishu never actually moved to a plugin — the bespoke flow is
-        # _setup_feishu below, so dispatch it directly.
-        "feishu": _setup_feishu,
+        # feishu moved into the plugin: setup_fn registered by
+        # plugins/platforms/feishu/adapter.py::register(). #41112.
         # wecom moved into the plugin: setup_fn registered by
         # plugins/platforms/wecom/adapter.py::register(). #41112.
         "qqbot": _setup_qqbot,

@@ -102,9 +102,6 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
-    # The conftest points HERMES_HOME at a per-test tempdir, which the
-    # temp-home service-write guard (intentionally) refuses to persist.
-    monkeypatch.setattr(gateway, "_refuse_temp_home_service_write", lambda definition, kind: False)
 
     calls = []
 
@@ -115,6 +112,10 @@ def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     helper_calls = []
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
     monkeypatch.setattr(gateway, "_ensure_linger_enabled", lambda: helper_calls.append(True))
+    # This test doesn't exercise the temp-HERMES_HOME guard; the sandbox's
+    # own HERMES_HOME can legitimately resolve under a temp dir, which would
+    # otherwise make generate_systemd_unit()'s real output trip the guard.
+    monkeypatch.setattr(gateway, "_refuse_temp_home_service_write", lambda *a, **k: False)
 
     gateway.systemd_install(force=False)
 

@@ -211,9 +211,9 @@ class TestListAndCleanup:
 
         db = manager._get_db()
         messages = db.get_messages_as_conversation(state.session_id)
-        # Persistence stamps each message with a timestamp on restore; ignore it.
-        messages = [{k: v for k, v in m.items() if k != "timestamp"} for m in messages]
-        assert messages == [{"role": "user", "content": "original"}]
+        assert len(messages) == 1
+        first = {k: v for k, v in messages[0].items() if k != "timestamp"}
+        assert first == {"role": "user", "content": "original"}
 
     def test_cleanup_clears_all(self, manager):
         s1 = manager.create_session()
@@ -504,10 +504,8 @@ class TestPersistence:
         restored = manager.get_session(state.session_id)
         assert restored is not None
         assert len(restored.history) == 1
-        # Persistence stamps each message with a timestamp on restore;
-        # ignore it here — this test cares about the reasoning fields.
-        message = {k: v for k, v in restored.history[0].items() if k != "timestamp"}
-        assert message == {
+        first = {k: v for k, v in restored.history[0].items() if k != "timestamp"}
+        assert first == {
             "role": "assistant",
             "content": "hello",
             "reasoning": "step-by-step",
