@@ -6085,11 +6085,22 @@ def _builtin_setup_fn(key: str):
         # plugins/platforms/discord/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
         #
-        # telegram, slack, matrix, mattermost, whatsapp, email, sms,
-        # dingtalk, and wecom/wecom_callback are built-in adapters
-        # (gateway/platforms/*.py) that use the generic vars-schema-driven
-        # _setup_standard_platform() flow via their _PLATFORMS entries above
-        # -- no bespoke function needed here.
+        # telegram, slack, and matrix are built-in (not plugin-migrated —
+        # see the _PLATFORMS NOTE above). They keep their bespoke setup
+        # flows here because the generic _setup_standard_platform fallback
+        # treats the first `vars` entry (token_var) as mandatory and aborts
+        # the whole wizard if it's left empty. That breaks Matrix's
+        # documented "leave the access token empty for password login"
+        # path outright, and loses Telegram's token-format validation and
+        # Slack's manifest-regeneration prompt.
+        "telegram": _s._setup_telegram,
+        "slack": _s._setup_slack,
+        "matrix": _s._setup_matrix,
+        #
+        # mattermost, whatsapp, email, sms, dingtalk, and wecom/wecom_callback
+        # are built-in adapters (gateway/platforms/*.py) that use the generic
+        # vars-schema-driven _setup_standard_platform() flow via their
+        # _PLATFORMS entries above -- no bespoke function needed for these.
         "bluebubbles": _s._setup_bluebubbles,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
