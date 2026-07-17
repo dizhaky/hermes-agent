@@ -4758,6 +4758,108 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "dingtalk",
+        "label": "DingTalk",
+        "emoji": "💬",
+        "token_var": "DINGTALK_CLIENT_ID",
+        "setup_instructions": [
+            "1. Go to https://open-dev.dingtalk.com → Create Application",
+            "2. Under 'Credentials', copy the AppKey (Client ID) and AppSecret (Client Secret)",
+            "3. Enable 'Stream Mode' under the bot settings",
+            "4. Add the bot to a group chat or message it directly",
+        ],
+        "vars": [
+            {"name": "DINGTALK_CLIENT_ID", "prompt": "AppKey (Client ID)", "password": False,
+             "help": "The AppKey from your DingTalk application credentials."},
+            {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
+             "help": "The AppSecret from your DingTalk application credentials."},
+        ],
+    },
+    {
+        "key": "feishu",
+        "label": "Feishu / Lark",
+        "emoji": "🪽",
+        "token_var": "FEISHU_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)",
+            "2. Create an app and copy the App ID and App Secret",
+            "3. Enable the Bot capability for the app",
+            "4. Choose WebSocket (recommended) or Webhook connection mode",
+            "5. Add the bot to a group chat or message it directly",
+            "6. Restrict access with FEISHU_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "FEISHU_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Feishu/Lark application."},
+            {"name": "FEISHU_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret from your Feishu/Lark application."},
+            {"name": "FEISHU_DOMAIN", "prompt": "Domain — feishu or lark (default: feishu)", "password": False,
+             "help": "Use 'feishu' for Feishu China, or 'lark' for Lark international."},
+            {"name": "FEISHU_CONNECTION_MODE", "prompt": "Connection mode — websocket or webhook (default: websocket)", "password": False,
+             "help": "websocket is recommended unless you specifically need webhook mode."},
+            {"name": "FEISHU_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which Feishu/Lark users can interact with the bot."},
+            {"name": "FEISHU_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
+    {
+        "key": "wecom",
+        "label": "WeCom (Enterprise WeChat)",
+        "emoji": "💬",
+        "token_var": "WECOM_BOT_ID",
+        "setup_instructions": [
+            "1. Go to WeCom Admin Console → Applications → Create AI Bot",
+            "2. Copy the Bot ID and Secret from the bot's credentials page",
+            "3. The bot connects via WebSocket — no public endpoint needed",
+            "4. Add the bot to a group chat or message it directly in WeCom",
+            "5. Restrict access with WECOM_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
+             "help": "The Bot ID from your WeCom AI Bot."},
+            {"name": "WECOM_SECRET", "prompt": "Secret", "password": True,
+             "help": "The secret from your WeCom AI Bot."},
+            {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WeCom users can interact with the bot."},
+            {"name": "WECOM_HOME_CHANNEL", "prompt": "Home chat ID (optional, for cron/notifications)", "password": False,
+             "help": "Chat ID for scheduled results and notifications."},
+        ],
+    },
+    {
+        "key": "wecom_callback",
+        "label": "WeCom Callback (Self-Built App)",
+        "emoji": "💬",
+        "token_var": "WECOM_CALLBACK_CORP_ID",
+        "setup_instructions": [
+            "1. Go to WeCom Admin Console → Applications → Create Self-Built App",
+            "2. Note the Corp ID (top of admin console) and create a Corp Secret",
+            "3. Under Receive Messages, configure the callback URL to point to your server",
+            "4. Copy the Token and EncodingAESKey from the callback configuration",
+            "5. The adapter runs an HTTP server — ensure the port is reachable from WeCom",
+            "6. Restrict access with WECOM_CALLBACK_ALLOWED_USERS for production use",
+        ],
+        "vars": [
+            {"name": "WECOM_CALLBACK_CORP_ID", "prompt": "Corp ID", "password": False,
+             "help": "Your WeCom enterprise Corp ID."},
+            {"name": "WECOM_CALLBACK_CORP_SECRET", "prompt": "Corp Secret", "password": True,
+             "help": "The secret for your self-built application."},
+            {"name": "WECOM_CALLBACK_AGENT_ID", "prompt": "Agent ID", "password": False,
+             "help": "The Agent ID of your self-built application."},
+            {"name": "WECOM_CALLBACK_TOKEN", "prompt": "Callback Token", "password": True,
+             "help": "The Token from your WeCom callback configuration."},
+            {"name": "WECOM_CALLBACK_ENCODING_AES_KEY", "prompt": "Encoding AES Key", "password": True,
+             "help": "The EncodingAESKey from your WeCom callback configuration."},
+            {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback server port (default: 8645)", "password": False,
+             "help": "Port for the HTTP callback server."},
+            {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which WeCom users can interact with the app."},
+        ],
+    },
+    {
         "key": "mattermost",
         "label": "Mattermost",
         "emoji": "💬",
@@ -5295,13 +5397,10 @@ def _setup_standard_platform(platform: dict):
     print_success(f"{emoji} {label} configured!")
 
 
-# _setup_whatsapp and _setup_dingtalk moved into their plugins:
-# plugins/platforms/{whatsapp,dingtalk}/adapter.py::interactive_setup
-# (registered via setup_fn, dispatched through the plugin path). #41112.
-
-
-# _setup_wecom moved to plugins/platforms/wecom/adapter.py::interactive_setup
-# (registered via setup_fn, dispatched through the plugin path). #41112.
+# dingtalk, wecom, and wecom_callback use the generic vars-schema-driven
+# _setup_standard_platform() flow (see their _PLATFORMS entries above) rather
+# than a bespoke interactive function -- consistent with the telegram/slack/
+# matrix/whatsapp/email/sms platforms restored in #89.
 
 
 def _is_service_installed() -> bool:
@@ -5544,8 +5643,176 @@ def _setup_weixin():
         print_info(f"  User ID: {user_id}")
 
 
-# _setup_feishu moved to plugins/platforms/feishu/adapter.py::interactive_setup
-# (registered via setup_fn, dispatched through the plugin path). #41112.
+def _setup_feishu():
+    """Interactive setup for Feishu / Lark — scan-to-create or manual credentials."""
+    print()
+    print(color("  ─── 🪽 Feishu / Lark Setup ───", Colors.CYAN))
+
+    existing_app_id = get_env_value("FEISHU_APP_ID")
+    existing_secret = get_env_value("FEISHU_APP_SECRET")
+    if existing_app_id and existing_secret:
+        print()
+        print_success("Feishu / Lark is already configured.")
+        if not prompt_yes_no("  Reconfigure Feishu / Lark?", False):
+            return
+
+    # ── Choose setup method ──
+    print()
+    method_choices = [
+        "Scan QR code to create a new bot automatically (recommended)",
+        "Enter existing App ID and App Secret manually",
+    ]
+    method_idx = prompt_choice("  How would you like to set up Feishu / Lark?", method_choices, 0)
+
+    credentials = None
+    used_qr = False
+
+    if method_idx == 0:
+        # ── QR scan-to-create ──
+        try:
+            from gateway.platforms.feishu import qr_register
+        except Exception as exc:
+            print_error(f"  Feishu / Lark onboard import failed: {exc}")
+            qr_register = None
+
+        if qr_register is not None:
+            try:
+                credentials = qr_register()
+            except KeyboardInterrupt:
+                print()
+                print_warning("  Feishu / Lark setup cancelled.")
+                return
+            except Exception as exc:
+                print_warning(f"  QR registration failed: {exc}")
+        if credentials:
+            used_qr = True
+        if not credentials:
+            print_info("  QR setup did not complete. Continuing with manual input.")
+
+    # ── Manual credential input ──
+    if not credentials:
+        print()
+        print_info("  Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)")
+        print_info("  Create an app, enable the Bot capability, and copy the credentials.")
+        print()
+        app_id = prompt("  App ID", password=False)
+        if not app_id:
+            print_warning("  Skipped — Feishu / Lark won't work without an App ID.")
+            return
+        app_secret = prompt("  App Secret", password=True)
+        if not app_secret:
+            print_warning("  Skipped — Feishu / Lark won't work without an App Secret.")
+            return
+
+        domain_choices = ["feishu (China)", "lark (International)"]
+        domain_idx = prompt_choice("  Domain", domain_choices, 0)
+        domain = "lark" if domain_idx == 1 else "feishu"
+
+        # Try to probe the bot with manual credentials
+        bot_name = None
+        try:
+            from gateway.platforms.feishu import probe_bot
+            bot_info = probe_bot(app_id, app_secret, domain)
+            if bot_info:
+                bot_name = bot_info.get("bot_name")
+                print_success(f"  Credentials verified — bot: {bot_name or 'unnamed'}")
+            else:
+                print_warning("  Could not verify bot connection. Credentials saved anyway.")
+        except Exception as exc:
+            print_warning(f"  Credential verification skipped: {exc}")
+
+        credentials = {
+            "app_id": app_id,
+            "app_secret": app_secret,
+            "domain": domain,
+            "open_id": None,
+            "bot_name": bot_name,
+        }
+
+    # ── Save core credentials ──
+    app_id = credentials["app_id"]
+    app_secret = credentials["app_secret"]
+    domain = credentials.get("domain", "feishu")
+    open_id = credentials.get("open_id")
+    bot_name = credentials.get("bot_name")
+
+    save_env_value("FEISHU_APP_ID", app_id)
+    save_env_value("FEISHU_APP_SECRET", app_secret)
+    save_env_value("FEISHU_DOMAIN", domain)
+    # Bot identity is resolved at runtime via _hydrate_bot_identity().
+
+    # ── Connection mode ──
+    if used_qr:
+        connection_mode = "websocket"
+    else:
+        print()
+        mode_choices = [
+            "WebSocket (recommended — no public URL needed)",
+            "Webhook (requires a reachable HTTP endpoint)",
+        ]
+        mode_idx = prompt_choice("  Connection mode", mode_choices, 0)
+        connection_mode = "webhook" if mode_idx == 1 else "websocket"
+        if connection_mode == "webhook":
+            print_info("  Webhook defaults: 127.0.0.1:8765/feishu/webhook")
+            print_info("  Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH")
+            print_info("  For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN")
+    save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
+
+    if bot_name:
+        print()
+        print_success(f"  Bot created: {bot_name}")
+
+    # ── DM security policy ──
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)",
+        "Allow all direct messages",
+        "Only allow listed user IDs",
+    ]
+    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    if access_idx == 0:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        print_success("  DM pairing enabled.")
+        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
+    elif access_idx == 1:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        print_warning("  Open DM access enabled for Feishu / Lark.")
+    else:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
+        default_allow = open_id or ""
+        allowlist = prompt("  Allowed user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        save_env_value("FEISHU_ALLOWED_USERS", allowlist)
+        print_success("  Allowlist saved.")
+
+    # ── Group policy ──
+    print()
+    group_choices = [
+        "Respond only when @mentioned in groups (recommended)",
+        "Disable group chats",
+    ]
+    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
+    if group_idx == 0:
+        save_env_value("FEISHU_GROUP_POLICY", "open")
+        print_info("  Group chats enabled (bot must be @mentioned).")
+    else:
+        save_env_value("FEISHU_GROUP_POLICY", "disabled")
+        print_info("  Group chats disabled.")
+
+    # ── Home channel ──
+    print()
+    home_channel = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    if home_channel:
+        save_env_value("FEISHU_HOME_CHANNEL", home_channel)
+        print_success(f"  Home channel set to {home_channel}")
+
+    print()
+    print_success("🪽 Feishu / Lark configured!")
+    print_info(f"  App ID: {app_id}")
+    print_info(f"  Domain: {domain}")
+    if bot_name:
+        print_info(f"  Bot: {bot_name}")
 
 
 def _setup_qqbot():
@@ -5814,31 +6081,20 @@ def _builtin_setup_fn(key: str):
     from hermes_cli import setup as _s
 
     return {
-        # telegram moved into the plugin: setup_fn registered by
-        # plugins/platforms/telegram/adapter.py::register(). #41112.
         # discord moved into the plugin: setup_fn is registered by
         # plugins/platforms/discord/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
-        # slack moved into the plugin: setup_fn is registered by
-        # plugins/platforms/slack/adapter.py::register() and dispatched
-        # via the plugin path in _configure_platform(). #41112.
-        # matrix moved into the plugin: setup_fn registered by
-        # plugins/platforms/matrix/adapter.py::register() and dispatched via
-        # the plugin path in _configure_platform(). #41112.
-        # mattermost moved into the plugin: setup_fn is registered by
-        # plugins/platforms/mattermost/adapter.py::register() and dispatched
-        # via the plugin path in _configure_platform().
+        #
+        # telegram, slack, matrix, mattermost, whatsapp, email, sms,
+        # dingtalk, and wecom/wecom_callback are built-in adapters
+        # (gateway/platforms/*.py) that use the generic vars-schema-driven
+        # _setup_standard_platform() flow via their _PLATFORMS entries above
+        # -- no bespoke function needed here.
         "bluebubbles": _s._setup_bluebubbles,
         "webhooks": _s._setup_webhooks,
         "signal": _setup_signal,
-        # whatsapp + dingtalk moved into plugins: setup_fn registered by
-        # plugins/platforms/{whatsapp,dingtalk}/adapter.py::register() and
-        # dispatched via the plugin path in _configure_platform(). #41112.
         "weixin": _setup_weixin,
-        # feishu moved into the plugin: setup_fn registered by
-        # plugins/platforms/feishu/adapter.py::register(). #41112.
-        # wecom moved into the plugin: setup_fn registered by
-        # plugins/platforms/wecom/adapter.py::register(). #41112.
+        "feishu": _setup_feishu,
         "qqbot": _setup_qqbot,
     }.get(key)
 
