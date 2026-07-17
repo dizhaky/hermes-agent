@@ -4767,12 +4767,17 @@ _PLATFORMS = [
             "2. Under 'Credentials', copy the AppKey (Client ID) and AppSecret (Client Secret)",
             "3. Enable 'Stream Mode' under the bot settings",
             "4. Add the bot to a group chat or message it directly",
+            "5. Restrict access with DINGTALK_ALLOWED_USERS for production use",
         ],
         "vars": [
             {"name": "DINGTALK_CLIENT_ID", "prompt": "AppKey (Client ID)", "password": False,
              "help": "The AppKey from your DingTalk application credentials."},
             {"name": "DINGTALK_CLIENT_SECRET", "prompt": "AppSecret (Client Secret)", "password": True,
+             "required": True,
              "help": "The AppSecret from your DingTalk application credentials."},
+            {"name": "DINGTALK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which DingTalk users can interact with the bot."},
         ],
     },
     {
@@ -4820,6 +4825,7 @@ _PLATFORMS = [
             {"name": "WECOM_BOT_ID", "prompt": "Bot ID", "password": False,
              "help": "The Bot ID from your WeCom AI Bot."},
             {"name": "WECOM_SECRET", "prompt": "Secret", "password": True,
+             "required": True,
              "help": "The secret from your WeCom AI Bot."},
             {"name": "WECOM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
              "is_allowlist": True,
@@ -4845,6 +4851,7 @@ _PLATFORMS = [
             {"name": "WECOM_CALLBACK_CORP_ID", "prompt": "Corp ID", "password": False,
              "help": "Your WeCom enterprise Corp ID."},
             {"name": "WECOM_CALLBACK_CORP_SECRET", "prompt": "Corp Secret", "password": True,
+             "required": True,
              "help": "The secret for your self-built application."},
             {"name": "WECOM_CALLBACK_AGENT_ID", "prompt": "Agent ID", "password": False,
              "help": "The Agent ID of your self-built application."},
@@ -4853,7 +4860,8 @@ _PLATFORMS = [
             {"name": "WECOM_CALLBACK_ENCODING_AES_KEY", "prompt": "Encoding AES Key", "password": True,
              "help": "The EncodingAESKey from your WeCom callback configuration."},
             {"name": "WECOM_CALLBACK_PORT", "prompt": "Callback server port (default: 8645)", "password": False,
-             "help": "Port for the HTTP callback server."},
+             "numeric": True,
+             "help": "Port for the HTTP callback server. Must be a whole number."},
             {"name": "WECOM_CALLBACK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or empty)", "password": False,
              "is_allowlist": True,
              "help": "Restrict which WeCom users can interact with the app."},
@@ -5277,8 +5285,10 @@ def _setup_standard_platform(platform: dict):
         print()
         print_info(f"  {var['help']}")
         existing = get_env_value(var["name"])
-        if existing and var["name"] != token_var:
+        if existing and var["name"] != token_var and not var.get("password"):
             print_info(f"  Current: {existing}")
+        elif existing and var.get("password"):
+            print_info("  Current: (already set — leave blank to keep it)")
 
         if auto_token_saved and var["name"] == token_var:
             print_info("  Token saved by automatic setup.")
@@ -5352,8 +5362,8 @@ def _setup_standard_platform(platform: dict):
                     if is_email:
                         save_env_value("EMAIL_ALLOW_ALL_USERS", "true")
                     else:
-                        save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
-                    print_warning("  Open access enabled — anyone can use your bot!")
+                        save_env_value(f"{platform['key'].upper()}_ALLOW_ALL_USERS", "true")
+                    print_warning(f"  Open access enabled for {label} — anyone can message this bot!")
                 elif access_idx == 1:
                     if is_email:
                         _set_platform_unauthorized_dm_behavior("email", "pair")
@@ -5372,10 +5382,14 @@ def _setup_standard_platform(platform: dict):
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
+        if value and var.get("numeric") and not value.isdigit():
+            print_warning(f"  \"{value}\" isn't a whole number — skipping (default will be used).")
+            value = ""
+        is_required = var["name"] == token_var or var.get("required")
         if value:
             save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")
-        elif var["name"] == token_var:
+        elif is_required:
             print_warning(f"  Skipped — {label} won't work without this.")
             return
         else:
