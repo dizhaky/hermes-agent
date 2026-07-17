@@ -5669,11 +5669,11 @@ def _setup_feishu():
 
     if method_idx == 0:
         # ── QR scan-to-create ──
+        qr_register = None
         try:
             from gateway.platforms.feishu import qr_register
         except Exception as exc:
             print_error(f"  Feishu / Lark onboard import failed: {exc}")
-            qr_register = None
 
         if qr_register is not None:
             try:
@@ -5730,9 +5730,9 @@ def _setup_feishu():
         }
 
     # ── Save core credentials ──
-    app_id = credentials["app_id"]
-    app_secret = credentials["app_secret"]
-    domain = credentials.get("domain", "feishu")
+    app_id = str(credentials["app_id"])
+    app_secret = str(credentials["app_secret"])
+    domain = str(credentials.get("domain") or "feishu")
     open_id = credentials.get("open_id")
     bot_name = credentials.get("bot_name")
 
