@@ -66,3 +66,22 @@ either fix) explicitly exercises the QR-registration UX and specific
   "
   ```
 - `ruff check hermes_cli/gateway.py` — clean.
+
+## CodeQL alert on restored `_setup_feishu()`
+
+Restoring `_setup_feishu()` reintroduced `save_env_value("FEISHU_APP_SECRET",
+app_secret)` (gateway.py:5740), which CodeQL flags as a new high-severity
+"clear-text storage of sensitive information" alert — it's new code in this
+diff's eyes, even though it's byte-for-byte the same pattern already used,
+unflagged, for every other credential in this file (e.g.
+`save_env_value("WEIXIN_TOKEN", token)` at gateway.py:5540,
+`save_env_value("QQ_CLIENT_SECRET", ...)` at gateway.py:5878).
+`save_env_value()` (`hermes_cli/config.py:5107`) writes every credential in
+the app to a plaintext `~/.hermes/.env` file protected by restrictive file
+permissions (`_secure_file()`, 0600), never encryption — this is the CLI's
+established, deliberate credential-storage design (same model as `aws`, `gh`,
+git-credential-store), not a new vulnerability class introduced here.
+
+Decision: dismiss the alert on GitHub's Security tab as a false positive
+rather than change the storage architecture or add an unverified suppression
+comment.
