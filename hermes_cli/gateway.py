@@ -2704,7 +2704,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2741,7 +2741,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -5544,8 +5544,176 @@ def _setup_weixin():
         print_info(f"  User ID: {user_id}")
 
 
-# _setup_feishu moved to plugins/platforms/feishu/adapter.py::interactive_setup
-# (registered via setup_fn, dispatched through the plugin path). #41112.
+def _setup_feishu():
+    """Interactive setup for Feishu / Lark — scan-to-create or manual credentials."""
+    print()
+    print(color("  ─── 🪽 Feishu / Lark Setup ───", Colors.CYAN))
+
+    existing_app_id = get_env_value("FEISHU_APP_ID")
+    existing_secret = get_env_value("FEISHU_APP_SECRET")
+    if existing_app_id and existing_secret:
+        print()
+        print_success("Feishu / Lark is already configured.")
+        if not prompt_yes_no("  Reconfigure Feishu / Lark?", False):
+            return
+
+    # ── Choose setup method ──
+    print()
+    method_choices = [
+        "Scan QR code to create a new bot automatically (recommended)",
+        "Enter existing App ID and App Secret manually",
+    ]
+    method_idx = prompt_choice("  How would you like to set up Feishu / Lark?", method_choices, 0)
+
+    credentials = None
+    used_qr = False
+
+    if method_idx == 0:
+        # ── QR scan-to-create ──
+        try:
+            from gateway.platforms.feishu import qr_register
+        except Exception as exc:
+            print_error(f"  Feishu / Lark onboard import failed: {exc}")
+            qr_register = None
+
+        if qr_register is not None:
+            try:
+                credentials = qr_register()
+            except KeyboardInterrupt:
+                print()
+                print_warning("  Feishu / Lark setup cancelled.")
+                return
+            except Exception as exc:
+                print_warning(f"  QR registration failed: {exc}")
+        if credentials:
+            used_qr = True
+        if not credentials:
+            print_info("  QR setup did not complete. Continuing with manual input.")
+
+    # ── Manual credential input ──
+    if not credentials:
+        print()
+        print_info("  Go to https://open.feishu.cn/ (or https://open.larksuite.com/ for Lark)")
+        print_info("  Create an app, enable the Bot capability, and copy the credentials.")
+        print()
+        app_id = prompt("  App ID", password=False)
+        if not app_id:
+            print_warning("  Skipped — Feishu / Lark won't work without an App ID.")
+            return
+        app_secret = prompt("  App Secret", password=True)
+        if not app_secret:
+            print_warning("  Skipped — Feishu / Lark won't work without an App Secret.")
+            return
+
+        domain_choices = ["feishu (China)", "lark (International)"]
+        domain_idx = prompt_choice("  Domain", domain_choices, 0)
+        domain = "lark" if domain_idx == 1 else "feishu"
+
+        # Try to probe the bot with manual credentials
+        bot_name = None
+        try:
+            from gateway.platforms.feishu import probe_bot
+            bot_info = probe_bot(app_id, app_secret, domain)
+            if bot_info:
+                bot_name = bot_info.get("bot_name")
+                print_success(f"  Credentials verified — bot: {bot_name or 'unnamed'}")
+            else:
+                print_warning("  Could not verify bot connection. Credentials saved anyway.")
+        except Exception as exc:
+            print_warning(f"  Credential verification skipped: {exc}")
+
+        credentials = {
+            "app_id": app_id,
+            "app_secret": app_secret,
+            "domain": domain,
+            "open_id": None,
+            "bot_name": bot_name,
+        }
+
+    # ── Save core credentials ──
+    app_id = credentials["app_id"]
+    app_secret = credentials["app_secret"]
+    domain = credentials.get("domain", "feishu")
+    open_id = credentials.get("open_id")
+    bot_name = credentials.get("bot_name")
+
+    save_env_value("FEISHU_APP_ID", app_id)
+    save_env_value("FEISHU_APP_SECRET", app_secret)
+    save_env_value("FEISHU_DOMAIN", domain)
+    # Bot identity is resolved at runtime via _hydrate_bot_identity().
+
+    # ── Connection mode ──
+    if used_qr:
+        connection_mode = "websocket"
+    else:
+        print()
+        mode_choices = [
+            "WebSocket (recommended — no public URL needed)",
+            "Webhook (requires a reachable HTTP endpoint)",
+        ]
+        mode_idx = prompt_choice("  Connection mode", mode_choices, 0)
+        connection_mode = "webhook" if mode_idx == 1 else "websocket"
+        if connection_mode == "webhook":
+            print_info("  Webhook defaults: 127.0.0.1:8765/feishu/webhook")
+            print_info("  Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH")
+            print_info("  For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN")
+    save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
+
+    if bot_name:
+        print()
+        print_success(f"  Bot created: {bot_name}")
+
+    # ── DM security policy ──
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)",
+        "Allow all direct messages",
+        "Only allow listed user IDs",
+    ]
+    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    if access_idx == 0:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        print_success("  DM pairing enabled.")
+        print_info("  Unknown users can request access; approve with `hermes pairing approve`.")
+    elif access_idx == 1:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
+        save_env_value("FEISHU_ALLOWED_USERS", "")
+        print_warning("  Open DM access enabled for Feishu / Lark.")
+    else:
+        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
+        default_allow = open_id or ""
+        allowlist = prompt("  Allowed user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        save_env_value("FEISHU_ALLOWED_USERS", allowlist)
+        print_success("  Allowlist saved.")
+
+    # ── Group policy ──
+    print()
+    group_choices = [
+        "Respond only when @mentioned in groups (recommended)",
+        "Disable group chats",
+    ]
+    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
+    if group_idx == 0:
+        save_env_value("FEISHU_GROUP_POLICY", "open")
+        print_info("  Group chats enabled (bot must be @mentioned).")
+    else:
+        save_env_value("FEISHU_GROUP_POLICY", "disabled")
+        print_info("  Group chats disabled.")
+
+    # ── Home channel ──
+    print()
+    home_channel = prompt("  Home chat ID (optional, for cron/notifications)", password=False)
+    if home_channel:
+        save_env_value("FEISHU_HOME_CHANNEL", home_channel)
+        print_success(f"  Home channel set to {home_channel}")
+
+    print()
+    print_success("🪽 Feishu / Lark configured!")
+    print_info(f"  App ID: {app_id}")
+    print_info(f"  Domain: {domain}")
+    if bot_name:
+        print_info(f"  Bot: {bot_name}")
 
 
 def _setup_qqbot():
@@ -5822,9 +5990,9 @@ def _builtin_setup_fn(key: str):
         # slack moved into the plugin: setup_fn is registered by
         # plugins/platforms/slack/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform(). #41112.
-        # matrix moved into the plugin: setup_fn registered by
-        # plugins/platforms/matrix/adapter.py::register() and dispatched via
-        # the plugin path in _configure_platform(). #41112.
+        # matrix never actually moved to a plugin — the bespoke flow still
+        # lives in hermes_cli/setup.py, so dispatch it directly.
+        "matrix": _s._setup_matrix,
         # mattermost moved into the plugin: setup_fn is registered by
         # plugins/platforms/mattermost/adapter.py::register() and dispatched
         # via the plugin path in _configure_platform().
@@ -5835,8 +6003,9 @@ def _builtin_setup_fn(key: str):
         # plugins/platforms/{whatsapp,dingtalk}/adapter.py::register() and
         # dispatched via the plugin path in _configure_platform(). #41112.
         "weixin": _setup_weixin,
-        # feishu moved into the plugin: setup_fn registered by
-        # plugins/platforms/feishu/adapter.py::register(). #41112.
+        # feishu never actually moved to a plugin — the bespoke flow is
+        # _setup_feishu below, so dispatch it directly.
+        "feishu": _setup_feishu,
         # wecom moved into the plugin: setup_fn registered by
         # plugins/platforms/wecom/adapter.py::register(). #41112.
         "qqbot": _setup_qqbot,

@@ -235,13 +235,15 @@ def test_gateway_install_in_container_with_operational_systemd_uses_systemd(monk
     monkeypatch.setattr(gateway, "is_wsl", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    # Prompting is TTY-gated; simulate an interactive stdin.
+    monkeypatch.setattr(gateway.sys, "stdin", SimpleNamespace(isatty=lambda: True))
 
     calls = []
     monkeypatch.setattr(gateway, "prompt_yes_no", lambda question, default=True: calls.append(("prompt", question, default)) or True)
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append(("install", force, system, run_as_user, enable_on_startup)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, non_interactive=False: calls.append(("install", force, system, run_as_user, enable_on_startup)),
     )
     monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start", system)))
 
@@ -289,6 +291,9 @@ def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkey
 
     calls = []
 
+    # Importing gateway.run (done by earlier tests) sets _HERMES_GATEWAY=1
+    # in this process, which trips the self-restart guard in gateway_command.
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
@@ -321,6 +326,9 @@ def test_gateway_restart_on_windows_preserves_failure_fallback(monkeypatch):
         calls.append("restart")
         raise OSError("simulated detached backend failure")
 
+    # Importing gateway.run (done by earlier tests) sets _HERMES_GATEWAY=1
+    # in this process, which trips the self-restart guard in gateway_command.
+    monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_windows", lambda: True)
@@ -370,6 +378,9 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # The conftest points HERMES_HOME at a per-test tempdir, which the
+    # temp-home service-write guard (intentionally) refuses to persist.
+    monkeypatch.setattr(gateway, "_refuse_temp_home_service_write", lambda definition, kind: False)
 
     calls = []
     helper_calls = []
@@ -397,6 +408,9 @@ def test_systemd_install_can_skip_enable_on_startup(monkeypatch, tmp_path, capsy
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # The conftest points HERMES_HOME at a per-test tempdir, which the
+    # temp-home service-write guard (intentionally) refuses to persist.
+    monkeypatch.setattr(gateway, "_refuse_temp_home_service_write", lambda definition, kind: False)
 
     calls = []
     helper_calls = []
@@ -488,8 +502,11 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
 
     out = capsys.readouterr().out
     assert (scope, did_install) == ("system", False)
-    assert "sudo hermes gateway install --system --run-as-user alice" in out
-    assert "sudo hermes gateway start --system" in out
+    # The wizard no longer prints a self-elevation recipe (defensive guard:
+    # "system" is only offered to root sessions); it points at a root shell
+    # or a user-scope install instead.
+    assert "System service install requires root" in out
+    assert "hermes gateway install" in out
 
 
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
@@ -531,6 +548,8 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
     monkeypatch.setattr(gateway, "is_wsl", lambda: False)
     monkeypatch.setattr(gateway, "is_macos", lambda: False)
     monkeypatch.setattr(gateway, "is_managed", lambda: False)
+    # Prompting is TTY-gated; simulate an interactive stdin.
+    monkeypatch.setattr(gateway.sys, "stdin", SimpleNamespace(isatty=lambda: True))
 
     answers = iter([False, False])
     calls = []
@@ -538,7 +557,7 @@ def test_gateway_install_can_decline_start_now_and_startup(monkeypatch):
     monkeypatch.setattr(
         gateway,
         "systemd_install",
-        lambda force=False, system=False, run_as_user=None, enable_on_startup=True: calls.append(("install", force, system, run_as_user, enable_on_startup)),
+        lambda force=False, system=False, run_as_user=None, enable_on_startup=True, non_interactive=False: calls.append(("install", force, system, run_as_user, enable_on_startup)),
     )
     monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(("start", system)))
 

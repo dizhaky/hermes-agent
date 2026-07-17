@@ -211,6 +211,8 @@ class TestListAndCleanup:
 
         db = manager._get_db()
         messages = db.get_messages_as_conversation(state.session_id)
+        # Persistence stamps each message with a timestamp on restore; ignore it.
+        messages = [{k: v for k, v in m.items() if k != "timestamp"} for m in messages]
         assert messages == [{"role": "user", "content": "original"}]
 
     def test_cleanup_clears_all(self, manager):

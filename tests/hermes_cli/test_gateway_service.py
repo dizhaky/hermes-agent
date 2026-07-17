@@ -402,6 +402,9 @@ class TestGatewayStopCleanup:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
+        # Importing gateway.run (done by earlier tests) sets _HERMES_GATEWAY=1
+        # in this process, which trips the self-stop guard in gateway_command.
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
@@ -428,6 +431,9 @@ class TestGatewayStopCleanup:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
+        # Importing gateway.run (done by earlier tests) sets _HERMES_GATEWAY=1
+        # in this process, which trips the self-stop guard in gateway_command.
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
@@ -480,6 +486,14 @@ class TestLaunchdServiceRecovery:
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        # The conftest points HERMES_HOME at a per-test tempdir, which the
+        # temp-home service-write guard (intentionally) refuses to persist.
+        monkeypatch.setattr(
+            gateway_cli, "_refuse_temp_home_service_write", lambda definition, kind: False
+        )
+        # Pre-seed the cached launchd domain so _launchd_domain() does not
+        # emit its own `launchctl print` probe calls into `calls`.
+        monkeypatch.setattr(gateway_cli, "_resolved_launchd_domain", f"gui/{os.getuid()}")
 
         calls = []
 
@@ -1706,7 +1720,10 @@ class TestSystemUnitPathRemapping:
         assert str(root_home) not in unit
         # Target user paths should be present
         assert "/home/alice" in unit
-        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+        # cwd is anchored to the target user's HERMES_HOME (stable, always
+        # exists) rather than the remapped source checkout, which can rot and
+        # crash-loop the unit at the CHDIR step. See _stable_service_working_dir.
+        assert "WorkingDirectory=/home/alice/.hermes\n" in unit
 
 
 class TestDockerAwareGateway:

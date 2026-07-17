@@ -176,6 +176,8 @@ class TestMessageStorage:
         assert messages[1]["observed"] == 0
 
         conversation = db.get_messages_as_conversation("s1")
+        for msg in conversation:
+            assert isinstance(msg.pop("timestamp"), float)
         assert conversation[0] == {
             "role": "user",
             "content": "[Alice|111]\nside chatter",
@@ -264,6 +266,7 @@ class TestMessageStorage:
         # get_messages_as_conversation decodes back to the original list
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
+        assert isinstance(conv[0].pop("timestamp"), float)
         assert conv[0] == {"role": "user", "content": content}
 
     def test_dict_content_round_trip(self, db):
@@ -335,6 +338,9 @@ class TestMessageStorage:
 
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 2
+        # Restored messages carry their DB timestamp for gateway replay.
+        for msg in conv:
+            assert isinstance(msg.pop("timestamp"), float)
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
@@ -426,6 +432,7 @@ class TestMessageStorage:
         )
 
         conv = db.get_messages_as_conversation("s1")
+        assert isinstance(conv[0].pop("timestamp"), float)
         assert conv == [{"role": "assistant", "content": "Visible answer"}]
 
     def test_reasoning_persisted_and_restored(self, db):
@@ -1531,11 +1538,15 @@ class TestSchemaInit:
         columns = {row[1] for row in cursor.fetchall()}
         assert "title" in columns
 
-    def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
-        """Opening an old DB should not add topic-mode columns until /topic opts in.
+    def test_session_peer_columns_are_auto_migrated_on_open(self, tmp_path):
+        """Opening an old DB adds the gateway peer-routing session columns.
 
-        The gateway must remain rollback-safe: simply upgrading Hermes and starting
-        the old bot should not eagerly mutate the state DB for this feature.
+        ``session_key`` / ``chat_id`` / ``chat_type`` / ``thread_id`` moved
+        from the /topic opt-in migration into the base sessions schema:
+        ``_insert_session_row`` writes them unconditionally (gateway session
+        recovery by peer key), so declarative column reconciliation must add
+        them on open.  The Telegram topic-mode *tables* remain opt-in — see
+        the next test.
         """
         old_db = tmp_path / "old.db"
         import sqlite3
@@ -1599,7 +1610,7 @@ class TestSchemaInit:
         db = SessionDB(db_path=old_db)
         cursor = db._conn.execute("PRAGMA table_info(sessions)")
         columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        assert {"chat_id", "chat_type", "thread_id", "session_key"} <= columns
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
