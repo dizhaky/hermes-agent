@@ -720,12 +720,14 @@ class TestExplicitPlatformDisable:
 
         env_enablement_fn = None
 
-    def _load(self, tmp_path, monkeypatch, yaml_text):
+    def _load(self, tmp_path, monkeypatch, yaml_text, env=None):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+        for key, value in (env or {}).items():
+            monkeypatch.setenv(key, value)
 
         from gateway.platform_registry import platform_registry
 
@@ -751,6 +753,30 @@ class TestExplicitPlatformDisable:
         # its existing behavior.
         config = self._load(tmp_path, monkeypatch, "timezone: America/New_York\n")
         assert config.platforms[Platform.DISCORD].enabled is True
+
+    def test_enabled_false_survives_env_token(self, tmp_path, monkeypatch):
+        # The direct token-detection pass in _apply_env_overrides sets
+        # enabled = True whenever DISCORD_BOT_TOKEN is present; an explicit
+        # disable must survive that pass too, not just plugin env-enablement.
+        config = self._load(
+            tmp_path,
+            monkeypatch,
+            "platforms:\n  discord:\n    enabled: false\n",
+            env={"DISCORD_BOT_TOKEN": "xoxb-fake-token"},
+        )
+        assert config.platforms[Platform.DISCORD].enabled is False
+
+    def test_env_token_still_enables_without_explicit_flag(
+        self, tmp_path, monkeypatch
+    ):
+        config = self._load(
+            tmp_path,
+            monkeypatch,
+            "timezone: America/New_York\n",
+            env={"DISCORD_BOT_TOKEN": "xoxb-fake-token"},
+        )
+        assert config.platforms[Platform.DISCORD].enabled is True
+        assert config.platforms[Platform.DISCORD].token == "xoxb-fake-token"
 
 
 class TestSlackInSetupMenus:

@@ -1227,7 +1227,16 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
-    
+    # Snapshot platforms the user explicitly disabled in config.yaml before
+    # any env pass runs: every token-detection block below sets
+    # ``enabled = True`` unconditionally, and a deliberate ``enabled: false``
+    # must survive all of them (DAN-2140), not just the plugin pass.
+    _explicitly_disabled = {
+        plat
+        for plat, plat_cfg in config.platforms.items()
+        if not plat_cfg.enabled and plat_cfg.extra.get("_enabled_explicit")
+    }
+
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if telegram_token:
@@ -1867,3 +1876,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)
+
+    # Re-assert explicit user disables: env passes may have set tokens or
+    # extras (harmless for a disabled platform), but the enabled flag itself
+    # stays false when config.yaml said so.
+    for plat in _explicitly_disabled:
+        if plat in config.platforms:
+            config.platforms[plat].enabled = False
