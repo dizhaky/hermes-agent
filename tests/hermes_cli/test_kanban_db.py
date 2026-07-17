@@ -1981,6 +1981,19 @@ def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
 
     real_connect = _sqlite3.connect
 
+    # init_db (kanban_home fixture) already switched the on-disk DB to WAL,
+    # and apply_wal_with_fallback's read-only probe never downgrades a DB
+    # whose header reports WAL.  On a real NFS mount WAL could never have
+    # been set, so reset to the pre-WAL default before simulating the failure.
+    prep = real_connect(str(kb.kanban_db_path()), isolation_level=None)
+    prep.execute("PRAGMA journal_mode=DELETE")
+    prep.close()
+
+    # Reset the once-per-process warning dedup so this test still sees the
+    # WARNING when another test triggered the fallback earlier in the run.
+    import hermes_state as _hs
+    _hs._wal_fallback_warned_paths.clear()
+
     class _WalBlockingConnection(_sqlite3.Connection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             if "journal_mode=wal" in sql.lower().replace(" ", ""):

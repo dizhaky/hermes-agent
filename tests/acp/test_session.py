@@ -501,7 +501,11 @@ class TestPersistence:
 
         restored = manager.get_session(state.session_id)
         assert restored is not None
-        assert restored.history == [{
+        assert len(restored.history) == 1
+        # Persistence stamps each message with a timestamp on restore;
+        # ignore it here — this test cares about the reasoning fields.
+        message = {k: v for k, v in restored.history[0].items() if k != "timestamp"}
+        assert message == {
             "role": "assistant",
             "content": "hello",
             "reasoning": "step-by-step",
@@ -511,7 +515,7 @@ class TestPersistence:
             "codex_reasoning_items": [
                 {"type": "reasoning", "id": "rs_123", "encrypted_content": "enc_blob"},
             ],
-        }]
+        }
 
     def test_restore_preserves_persisted_provider_snapshot(self, tmp_path, monkeypatch):
         """Restored ACP sessions should keep their original runtime provider."""
