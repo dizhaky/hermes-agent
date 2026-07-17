@@ -5358,13 +5358,12 @@ def _setup_standard_platform(platform: dict):
                     access_choices,
                     default_access_idx,
                 )
+                allow_all_var = "EMAIL_ALLOW_ALL_USERS" if is_email else f"{platform['key'].upper()}_ALLOW_ALL_USERS"
                 if access_idx == 0:
-                    if is_email:
-                        save_env_value("EMAIL_ALLOW_ALL_USERS", "true")
-                    else:
-                        save_env_value(f"{platform['key'].upper()}_ALLOW_ALL_USERS", "true")
+                    save_env_value(allow_all_var, "true")
                     print_warning(f"  Open access enabled for {label} — anyone can message this bot!")
                 elif access_idx == 1:
+                    save_env_value(allow_all_var, "false")
                     if is_email:
                         _set_platform_unauthorized_dm_behavior("email", "pair")
                     print_success(
@@ -5374,24 +5373,30 @@ def _setup_standard_platform(platform: dict):
                         "  Approve with: hermes pairing approve <platform> <code>"
                     )
                 elif is_email:
+                    save_env_value(allow_all_var, "false")
                     print_success("  Unknown email senders will be ignored.")
                 else:
+                    save_env_value(allow_all_var, "false")
                     print_info(
                         "  Skipped — configure later with 'hermes gateway setup'"
                     )
             continue
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
-        if value and var.get("numeric") and not value.isdigit():
-            print_warning(f"  \"{value}\" isn't a whole number — skipping (default will be used).")
+        if value and var.get("numeric") and not (value.isdigit() and 1 <= int(value) <= 65535):
+            print_warning(f"  \"{value}\" isn't a valid port (1-65535) — skipping (default will be used).")
             value = ""
-        is_required = var["name"] == token_var or var.get("required")
         if value:
             save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")
-        elif is_required:
+        elif var["name"] == token_var:
             print_warning(f"  Skipped — {label} won't work without this.")
             return
+        elif var.get("required") and not existing:
+            print_warning(f"  Skipped — {label} won't work without this.")
+            return
+        elif var.get("required"):
+            print_info("  Keeping existing value.")
         else:
             print_info("  Skipped (can configure later)")
 
@@ -5769,7 +5774,18 @@ def _setup_feishu():
         if connection_mode == "webhook":
             print_info("  Webhook defaults: 127.0.0.1:8765/feishu/webhook")
             print_info("  Override with FEISHU_WEBHOOK_HOST / FEISHU_WEBHOOK_PORT / FEISHU_WEBHOOK_PATH")
-            print_info("  For signature verification, set FEISHU_ENCRYPT_KEY and FEISHU_VERIFICATION_TOKEN")
+            print()
+            print_info("  Webhook mode needs a verification credential — without one,")
+            print_info("  anyone who can reach the endpoint could forge events.")
+            verification_token = prompt("  Verification Token (from Feishu app config)", password=True)
+            encrypt_key = prompt("  Encrypt Key (optional — enables signature verification)", password=True)
+            if verification_token:
+                save_env_value("FEISHU_VERIFICATION_TOKEN", verification_token)
+            if encrypt_key:
+                save_env_value("FEISHU_ENCRYPT_KEY", encrypt_key)
+            if not verification_token and not encrypt_key:
+                print_warning("  No verification credential provided — falling back to WebSocket mode.")
+                connection_mode = "websocket"
     save_env_value("FEISHU_CONNECTION_MODE", connection_mode)
 
     if bot_name:
