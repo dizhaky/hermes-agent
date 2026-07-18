@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1287,13 +1288,15 @@ class TestRunJobSessionPersistence:
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
 
         import hermes_cli.env_loader as _env_loader
-        import dotenv as _dotenv_mod
-        from pathlib import Path as _Path
 
-        def fake_load_hermes_dotenv(*, hermes_home=None, **_kw):
-            if hermes_home is not None:
-                _dotenv_mod.load_dotenv(str(_Path(hermes_home) / ".env"), override=True)
-            return []
+        def fake_load_hermes_dotenv(*, hermes_home=None, **kwargs):
+            env_file = Path(hermes_home) / ".env"
+            if env_file.exists():
+                for raw in env_file.read_text(encoding="utf-8").splitlines():
+                    line = raw.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, _, v = line.partition("=")
+                        os.environ[k.strip()] = v.strip()
 
         monkeypatch.setattr(_env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
