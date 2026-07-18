@@ -878,7 +878,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -925,7 +925,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -962,7 +962,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -990,7 +990,7 @@ class TestRunJobSessionPersistence:
         return fake_db, [
             patch("cron.scheduler._hermes_home", tmp_path),
             patch("cron.scheduler._resolve_origin", return_value=None),
-            patch("dotenv.load_dotenv"),
+            patch("hermes_cli.env_loader.load_hermes_dotenv"),
             patch("hermes_state.SessionDB", return_value=fake_db),
             patch(
                 "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1093,7 +1093,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1169,7 +1169,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1208,7 +1208,7 @@ class TestRunJobSessionPersistence:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1285,6 +1285,17 @@ class TestRunJobSessionPersistence:
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID", raising=False)
+
+        import hermes_cli.env_loader as _env_loader
+        import dotenv as _dotenv_mod
+        from pathlib import Path as _Path
+
+        def fake_load_hermes_dotenv(*, hermes_home=None, **_kw):
+            if hermes_home is not None:
+                _dotenv_mod.load_dotenv(str(_Path(hermes_home) / ".env"), override=True)
+            return []
+
+        monkeypatch.setattr(_env_loader, "load_hermes_dotenv", fake_load_hermes_dotenv)
 
         class FakeAgent:
             def __init__(self, *args, **kwargs):
@@ -1416,7 +1427,7 @@ class TestRunJobConfigLogging:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1445,7 +1456,7 @@ class TestRunJobConfigLogging:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -1478,7 +1489,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1510,7 +1521,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1539,7 +1550,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                    return_value=self._RUNTIME), \
@@ -1581,7 +1592,7 @@ class TestRunJobSkillBacked:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1641,7 +1652,7 @@ class TestRunJobSkillBacked:
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("tools.credential_files._resolve_hermes_home", return_value=tmp_path), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1679,7 +1690,7 @@ class TestRunJobSkillBacked:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -1725,7 +1736,7 @@ class TestRunJobSkillBacked:
 
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch(
                  "hermes_cli.runtime_provider.resolve_runtime_provider",
