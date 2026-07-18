@@ -1290,6 +1290,8 @@ class TestRunJobSessionPersistence:
         import hermes_cli.env_loader as _env_loader
 
         def fake_load_hermes_dotenv(*, hermes_home=None, **kwargs):
+            if hermes_home is None:
+                return
             env_file = Path(hermes_home) / ".env"
             if env_file.exists():
                 for raw in env_file.read_text(encoding="utf-8").splitlines():
