@@ -306,8 +306,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                     _SECRET_SOURCES[name] = "onepassword"
                 print(
                     f"  1Password Secrets Manager: applied {len(op_applied)} "
-                    f"secret{'s' if len(op_applied) != 1 else ''} "
-                    f"({', '.join(sorted(op_applied))})",
+                    f"secret{'s' if len(op_applied) != 1 else ''}",
                     file=sys.stderr,
                 )
         except Exception as exc:  # noqa: BLE001
