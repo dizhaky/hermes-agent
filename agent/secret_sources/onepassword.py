@@ -29,7 +29,6 @@ Design summary
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
 import re
@@ -52,8 +51,8 @@ _OP_RUN_TIMEOUT = 30
 _OP_INTEGRATION_NAME = "hermes-agent"
 _OP_INTEGRATION_VERSION = "1.0.0"
 
-# In-process cache: (token_fingerprint, vault_name, item_title) → _CachedFetch
-_CacheKey = Tuple[str, str, str]
+# In-process cache: (vault_name, item_title) → _CachedFetch
+_CacheKey = Tuple[str, str]
 _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 
 
@@ -158,15 +157,6 @@ def _sdk_version() -> str:
 # ---------------------------------------------------------------------------
 # Name helpers
 # ---------------------------------------------------------------------------
-
-
-def _token_fingerprint(token: str) -> str:
-    """Cache-key fingerprint — never logged, never displayed.
-
-    Uses SHA3-256 (not SHA-256) so CodeQL's ``weak-cryptographic-algorithm``
-    rule is satisfied; the intent is a compact cache key, not password storage.
-    """
-    return hashlib.sha3_256(token.encode("utf-8")).hexdigest()[:16]
 
 
 def _field_label_to_env_name(label: str) -> str:
@@ -309,7 +299,7 @@ def fetch_onepassword_secrets(
     if not token:
         raise RuntimeError("1Password service account token is empty")
 
-    cache_key = (_token_fingerprint(token), vault_name, item_title)
+    cache_key = (vault_name, item_title)
     if use_cache:
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
