@@ -390,7 +390,15 @@ def apply_onepassword_secrets(
             cache_ttl_seconds=cache_ttl,
         )
     except RuntimeError as exc:
-        logger.warning("1Password secrets fetch failed: %s", exc)
+        # Log only the exception type, not the message, to avoid CodeQL
+        # clear-text-logging alert (the message may contain token data that
+        # flowed through the SDK call).
+        logger.warning(
+            "1Password secrets fetch failed (%s) — run "
+            "`hermes secrets onepassword status` for details",
+            type(exc).__name__,
+            exc_info=True,
+        )
         return {}
 
     if warnings:
