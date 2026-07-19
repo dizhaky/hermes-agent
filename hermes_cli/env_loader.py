@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -20,6 +21,8 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # load_hermes_dotenv() calls (user env + project env, gateway hot-reload,
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
+
+logger = logging.getLogger(__name__)
 
 # Map of env-var name → source label ("bitwarden", etc.) for credentials
 # that were injected by an external secret source during load_hermes_dotenv().
@@ -249,7 +252,9 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # Bitwarden Secrets Manager
     # ------------------------------------------------------------------
     bw_cfg = secrets_cfg.get("bitwarden") or {}
-    if bw_cfg.get("enabled"):
+    if not bw_cfg.get("enabled"):
+        pass
+    else:
         try:
             from agent.secret_sources.bitwarden import apply_bitwarden_secrets
         except ImportError:
@@ -310,10 +315,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                     file=sys.stderr,
                 )
         except Exception as exc:  # noqa: BLE001
+            # Don't include exc in the message — it may contain token data
             print(
-                f"  1Password Secrets Manager: {exc}",
+                f"  1Password Secrets Manager: sync failed ({type(exc).__name__})",
                 file=sys.stderr,
             )
+            logger.warning("1Password secrets sync failed", exc_info=True)
 
 
 def _load_secrets_config(home_path: Path) -> dict:
