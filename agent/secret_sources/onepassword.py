@@ -149,7 +149,7 @@ def _sdk_version() -> str:
         return importlib.metadata.version("onepassword-sdk")
     except Exception:  # noqa: BLE001
         try:
-            import onepassword  # noqa: F401
+            import onepassword  # noqa: F401  # type: ignore[import-not-found]
             return "installed"
         except ImportError:
             return "not installed"
@@ -205,7 +205,7 @@ async def _fetch_secrets_async(
     Returns ``(secrets_dict, warnings_list)``.  Raises :class:`RuntimeError`
     for fatal conditions (vault not found, item not found, auth failure).
     """
-    from onepassword.client import Client  # noqa: PLC0415
+    from onepassword.client import Client  # noqa: PLC0415  # type: ignore[import-not-found]
 
     client = await Client.authenticate(
         auth=token,
