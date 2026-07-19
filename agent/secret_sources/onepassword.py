@@ -132,7 +132,7 @@ def install_onepassword_sdk(*, force: bool = False) -> str:
             timeout=120,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"pip install failed: {exc}") from exc
+        raise RuntimeError(f"pip install failed: {type(exc).__name__}") from None
 
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip()[:300]
@@ -325,7 +325,7 @@ def fetch_onepassword_secrets(
         # Use only the exception type name — not str(exc) — to avoid
         # propagating token data that may appear in the SDK's error message
         # (CodeQL py/clear-text-logging-sensitive-data taint path).
-        raise RuntimeError(f"1Password SDK error: {type(exc).__name__}") from exc
+        raise RuntimeError(f"1Password SDK error: {type(exc).__name__}") from None
 
     _CACHE[cache_key] = _CachedFetch(secrets=secrets, fetched_at=time.time())
     return secrets, warnings
@@ -400,7 +400,6 @@ def apply_onepassword_secrets(
             "1Password secrets fetch failed (%s) — run "
             "`hermes secrets onepassword status` for details",
             type(exc).__name__,
-            exc_info=True,
         )
         return {}
 

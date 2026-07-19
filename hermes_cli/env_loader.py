@@ -320,7 +320,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 f"  1Password Secrets Manager: sync failed ({type(exc).__name__})",
                 file=sys.stderr,
             )
-            logger.warning("1Password secrets sync failed", exc_info=True)
+            logger.warning("1Password secrets sync failed (%s)", type(exc).__name__)
 
 
 def _load_secrets_config(home_path: Path) -> dict:
