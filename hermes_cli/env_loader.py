@@ -283,12 +283,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 print(
                     f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
                     f"secret{'s' if len(result.applied) != 1 else ''} "
-                    f"({', '.join(sorted(result.applied))})",
+                    f"({len(result.applied)} secret{'s' if len(result.applied) != 1 else ''})",
                     file=sys.stderr,
                 )
             if result.error:
                 print(
-                    f"  Bitwarden Secrets Manager: {result.error}",
+                    f"  Bitwarden Secrets Manager: sync error ({type(result.error).__name__ if result.error else 'unknown'})",
                     file=sys.stderr,
                 )
             for warn in result.warnings:
