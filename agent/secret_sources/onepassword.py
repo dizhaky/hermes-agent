@@ -322,7 +322,10 @@ def fetch_onepassword_secrets(
         # Re-raise RuntimeError as-is (our own error messages).
         raise
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"1Password SDK error: {exc}") from exc
+        # Use only the exception type name — not str(exc) — to avoid
+        # propagating token data that may appear in the SDK's error message
+        # (CodeQL py/clear-text-logging-sensitive-data taint path).
+        raise RuntimeError(f"1Password SDK error: {type(exc).__name__}") from exc
 
     _CACHE[cache_key] = _CachedFetch(secrets=secrets, fetched_at=time.time())
     return secrets, warnings
