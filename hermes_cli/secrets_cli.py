@@ -568,9 +568,8 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
             "Continuing anyway.[/yellow]"
         )
 
-    save_env_value(token_env, token)
     os.environ[token_env] = token
-    console.print(f"  [green]✓[/green] stored in {get_env_path()} as {token_env}")
+    console.print(f"  [green]✓[/green] token loaded into current session as {token_env}")
 
     # ------------------------------------------------------------------ vault
     console.print()
@@ -639,6 +638,10 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
     secrets_cfg.setdefault("cache_ttl_seconds", 300)
     secrets_cfg.setdefault("auto_install", True)
     save_config(cfg)
+
+    console.print(f"\n[yellow]Note:[/yellow] The service account token will not be stored locally.")
+    console.print(f"Set [bold]{token_env}=<your-token>[/bold] in your shell environment or system keychain.")
+    console.print(f"Example: export {token_env}=ops_eyJ...")
 
     console.print()
     console.print(
