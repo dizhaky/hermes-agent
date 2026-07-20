@@ -421,11 +421,7 @@ def apply_onepassword_secrets(
         applied[key] = "***"
 
     if applied:
-        logger.debug(
-            "1Password Secrets Manager: applied %d secret(s) (%s)",
-            len(applied),
-            ", ".join(sorted(applied)),
-        )
+        logger.debug("1Password: applied %d secret(s)", len(applied))
 
     return applied
 
