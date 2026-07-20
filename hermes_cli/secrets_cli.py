@@ -604,7 +604,7 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
             use_cache=False,
         )
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
+        console.print(f"  [red]✗ Fetch failed: {type(exc).__name__}[/red]")
         return 1
 
     if not secrets:
@@ -626,8 +626,8 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
             table.add_row("(mapped)", env_key, status)
         console.print(table)
 
-    for w in warnings:
-        console.print(f"  [yellow]warning:[/yellow] {w}")
+    if warnings:
+        console.print(f"  [yellow]{len(warnings)} warning(s)[/yellow]")
 
     # ------------------------------------------------------------------ save
     secrets_cfg["enabled"] = True
@@ -740,7 +740,7 @@ def cmd_op_sync(args: argparse.Namespace) -> int:
             use_cache=False,
         )
     except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Fetch failed: {exc}[/red]")
+        console.print(f"[red]Fetch failed: {type(exc).__name__}[/red]")
         return 1
 
     if not secrets:
@@ -774,8 +774,8 @@ def cmd_op_sync(args: argparse.Namespace) -> int:
             )
 
     console.print(table)
-    for w in warnings:
-        console.print(f"[yellow]warning:[/yellow] {w}")
+    if warnings:
+        console.print(f"[yellow]{len(warnings)} warning(s)[/yellow]")
 
     if not args.apply:
         console.print(
