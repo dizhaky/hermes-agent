@@ -381,6 +381,7 @@ def apply_onepassword_secrets(
         try:
             install_onepassword_sdk()
         except Exception as exc:  # noqa: BLE001
+            # exc is from pip install — safe to log in full (no token data).
             logger.warning("1Password SDK auto-install failed: %s", exc)
             return {}
 
