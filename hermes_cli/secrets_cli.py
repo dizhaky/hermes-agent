@@ -479,7 +479,7 @@ def register_op_cli(parent_parser: argparse.ArgumentParser) -> None:
     )
     setup.add_argument(
         "--service-account-token",
-        help="Provide the service account token non-interactively (will be stored in .env)",
+        help="Token used for this setup session only; set OP_SERVICE_ACCOUNT_TOKEN in your environment for persistent use.",
     )
     setup.set_defaults(func=cmd_op_setup)
 

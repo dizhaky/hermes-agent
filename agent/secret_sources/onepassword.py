@@ -29,6 +29,7 @@ Design summary
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import re
@@ -44,8 +45,8 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 # ---------------------------------------------------------------------------
 
-# How long to wait for SDK calls, in seconds.
-_OP_RUN_TIMEOUT = 30
+# How long to wait for individual SDK calls, in seconds.
+SDK_TIMEOUT_SECONDS = 30
 
 # Strings passed to Client.authenticate() to identify this integration.
 _OP_INTEGRATION_NAME = "hermes-agent"
@@ -124,9 +125,15 @@ def install_onepassword_sdk(*, force: bool = False) -> str:
         import onepassword  # noqa: F401
         return _sdk_version()
 
+    pkg = "onepassword-sdk>=0.1.0,<2.0.0"
+    cmd = ["pip", "install", "--quiet"]
+    if force:
+        cmd.append("--force-reinstall")
+    cmd.append(pkg)
+
     try:
         result = subprocess.run(
-            ["pip", "install", "--quiet", "onepassword-sdk"],
+            cmd,
             capture_output=True,
             text=True,
             timeout=120,
@@ -201,14 +208,17 @@ async def _fetch_secrets_async(
     """
     from onepassword.client import Client  # noqa: PLC0415  # type: ignore[import-not-found]
 
-    client = await Client.authenticate(
-        auth=token,
-        integration_name=_OP_INTEGRATION_NAME,
-        integration_version=_OP_INTEGRATION_VERSION,
+    client = await asyncio.wait_for(
+        Client.authenticate(
+            auth=token,
+            integration_name=_OP_INTEGRATION_NAME,
+            integration_version=_OP_INTEGRATION_VERSION,
+        ),
+        timeout=SDK_TIMEOUT_SECONDS,
     )
 
     # ------------------------------------------------------------------ vaults
-    all_vaults = await client.vaults.list()
+    all_vaults = await asyncio.wait_for(client.vaults.list(), timeout=SDK_TIMEOUT_SECONDS)
     if vault_name:
         matching = [v for v in all_vaults if v.title == vault_name]
         if not matching:
@@ -229,10 +239,13 @@ async def _fetch_secrets_async(
     # ------------------------------------------------------------------ item
     target_item = None
     for vault_id in vault_ids:
-        item_overviews = await client.items.list(vault_id)
+        item_overviews = await asyncio.wait_for(client.items.list(vault_id), timeout=SDK_TIMEOUT_SECONDS)
         for overview in item_overviews:
             if not item_title or overview.title == item_title:
-                target_item = await client.items.get(vault_id, overview.id)
+                target_item = await asyncio.wait_for(
+                    client.items.get(vault_id, overview.id),
+                    timeout=SDK_TIMEOUT_SECONDS,
+                )
                 break
         if target_item is not None:
             break
@@ -310,14 +323,36 @@ def fetch_onepassword_secrets(
     fm = field_mapping or {}
 
     try:
-        secrets, warnings = asyncio.run(
-            _fetch_secrets_async(
-                token=token,
-                vault_name=vault_name,
-                item_title=item_title,
-                field_mapping=fm,
+        try:
+            asyncio.get_running_loop()
+            has_running_loop = True
+        except RuntimeError:
+            has_running_loop = False
+
+        if has_running_loop:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    _fetch_secrets_async(
+                        token=token,
+                        vault_name=vault_name,
+                        item_title=item_title,
+                        field_mapping=fm,
+                    ),
+                )
+                try:
+                    secrets, warnings = future.result(timeout=SDK_TIMEOUT_SECONDS + 5)
+                except concurrent.futures.TimeoutError:
+                    raise RuntimeError("1Password fetch timed out") from None
+        else:
+            secrets, warnings = asyncio.run(
+                _fetch_secrets_async(
+                    token=token,
+                    vault_name=vault_name,
+                    item_title=item_title,
+                    field_mapping=fm,
+                )
             )
-        )
     except RuntimeError:
         # Re-raise RuntimeError as-is (our own error messages).
         raise
