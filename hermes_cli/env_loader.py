@@ -368,6 +368,31 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 file=sys.stderr,
             )
             logger.warning("1Password secrets sync failed (%s)", type(exc).__name__)
+    else:
+        # The integration was disabled (or was previously enabled and just
+        # got turned off). A long-lived gateway reloads this on every turn
+        # without restarting, so without this, secrets a prior sync already
+        # injected would keep being used indefinitely after disabling —
+        # relinquish anything still holding the value we set (an operator's
+        # local override in the meantime is left alone, same rule as the
+        # refresh path above).
+        stale_managed = [
+            k for k, v in _SECRET_SOURCES.items()
+            if v == "onepassword" and _SECRET_VALUES.get(k) == os.environ.get(k)
+        ]
+        for k in stale_managed:
+            os.environ.pop(k, None)
+        for k, v in list(_SECRET_SOURCES.items()):
+            if v == "onepassword":
+                _SECRET_SOURCES.pop(k, None)
+                _SECRET_VALUES.pop(k, None)
+        if stale_managed:
+            print(
+                f"  1Password Secrets Manager: disabled — relinquished "
+                f"{len(stale_managed)} previously-managed secret"
+                f"{'s' if len(stale_managed) != 1 else ''}",
+                file=sys.stderr,
+            )
 
 
 def _load_secrets_config(home_path: Path) -> dict:

@@ -234,3 +234,39 @@ def test_onepassword_removal_clears_source_tracking(tmp_path, monkeypatch):
 
     assert env_loader.get_secret_source("GONE_KEY") is None
     assert "GONE_KEY" not in env_loader._SECRET_VALUES
+
+
+def test_onepassword_disabling_relinquishes_previously_managed_secrets(tmp_path, monkeypatch):
+    """Regression test: disabling the integration on a long-lived gateway
+    must stop it from continuing to use secrets a prior (enabled) sync
+    already injected — the gateway reloads env every turn without
+    restarting, so this can't wait for a process restart to take effect."""
+    import os
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("STILL_MANAGED_KEY", "op-value")
+    env_loader._SECRET_SOURCES["STILL_MANAGED_KEY"] = "onepassword"
+    env_loader._SECRET_VALUES["STILL_MANAGED_KEY"] = "op-value"
+
+    # A key the operator overrode locally in the meantime must be left
+    # alone — same rule as the enabled-refresh path.
+    monkeypatch.setenv("LOCALLY_OVERRIDDEN_KEY", "operator-value")
+    env_loader._SECRET_SOURCES["LOCALLY_OVERRIDDEN_KEY"] = "onepassword"
+    env_loader._SECRET_VALUES["LOCALLY_OVERRIDDEN_KEY"] = "stale-op-value"
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert "STILL_MANAGED_KEY" not in os.environ
+    assert env_loader.get_secret_source("STILL_MANAGED_KEY") is None
+
+    assert os.environ["LOCALLY_OVERRIDDEN_KEY"] == "operator-value"
+    assert env_loader.get_secret_source("LOCALLY_OVERRIDDEN_KEY") is None
+    monkeypatch.delenv("LOCALLY_OVERRIDDEN_KEY", raising=False)
