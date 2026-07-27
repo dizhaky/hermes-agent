@@ -140,10 +140,10 @@ def install_onepassword_sdk(*, force: bool = False) -> str:
     if not _lazy_ok:
         raise ImportError(
             "1Password SDK auto-install is disabled (HERMES_DISABLE_LAZY_INSTALLS). "
-            "Install manually: pip install 'onepassword-sdk>=0.1.0,<2.0.0'"
+            "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
         )
 
-    pkg = "onepassword-sdk>=0.1.0,<2.0.0"
+    pkg = "onepassword-sdk>=0.1.0,<0.2.0"
     pip_args = ["--quiet"]
     if force:
         pip_args.append("--force-reinstall")
@@ -232,7 +232,7 @@ async def _fetch_secrets_async(
     )
 
     # ------------------------------------------------------------------ vaults
-    all_vaults = await asyncio.wait_for(client.vaults.list(), timeout=SDK_TIMEOUT_SECONDS)
+    all_vaults = await asyncio.wait_for(client.vaults.list_all(), timeout=SDK_TIMEOUT_SECONDS)
     if vault_name:
         matching = [v for v in all_vaults if v.title == vault_name]
         if not matching:
@@ -253,11 +253,11 @@ async def _fetch_secrets_async(
     # ------------------------------------------------------------------ item
     target_item = None
     for vault_id in vault_ids:
-        item_overviews = await asyncio.wait_for(client.items.list(vault_id), timeout=SDK_TIMEOUT_SECONDS)
+        item_overviews = await asyncio.wait_for(client.items.list_all(vault_id=vault_id), timeout=SDK_TIMEOUT_SECONDS)
         for overview in item_overviews:
             if not item_title or overview.title == item_title:
                 target_item = await asyncio.wait_for(
-                    client.items.get(vault_id, overview.id),
+                    client.items.get(vault_id=vault_id, item_id=overview.id),
                     timeout=SDK_TIMEOUT_SECONDS,
                 )
                 break
@@ -465,7 +465,7 @@ def apply_onepassword_secrets(
             logger.warning(
                 "1Password SDK is not installed and auto-install is disabled "
                 "(HERMES_DISABLE_LAZY_INSTALLS). "
-                "Install manually: pip install 'onepassword-sdk>=0.1.0,<2.0.0'"
+                "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
             )
             return {}
 
