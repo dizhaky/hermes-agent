@@ -376,3 +376,56 @@ class TestConfiguredSecretTokenNamesAreBlocked:
 
         # Falls back gracefully — the static entries are still present.
         assert "OPENAI_API_KEY" in blocklist
+
+
+class TestDynamicallyManagedSecretsAreBlocked:
+    """A 1Password field with an unregistered label (e.g. DATABASE_PASSWORD,
+    CUSTOM_PRIVATE_KEY) has no static registration anywhere — the only way
+    to keep it out of subprocess env is to consult env_loader's runtime
+    source-tracking registry at call time, not the fixed blocklist computed
+    once at import time.
+
+    See the Codex finding on hermes-agent PR #106: without this, any
+    1Password-managed name that wasn't already a known API key leaked into
+    model-issued terminal and background-process commands.
+    """
+
+    def test_is_externally_sourced_secret_true_when_tracked(self):
+        from tools.environments.local import _is_externally_sourced_secret
+        import hermes_cli.env_loader as env_loader
+
+        env_loader._SECRET_SOURCES["DATABASE_PASSWORD"] = "onepassword"
+        try:
+            assert _is_externally_sourced_secret("DATABASE_PASSWORD") is True
+        finally:
+            env_loader._SECRET_SOURCES.pop("DATABASE_PASSWORD", None)
+
+    def test_is_externally_sourced_secret_false_when_untracked(self):
+        from tools.environments.local import _is_externally_sourced_secret
+        assert _is_externally_sourced_secret("SOME_UNTRACKED_VAR") is False
+
+    def test_make_run_env_strips_dynamically_managed_secret(self):
+        from tools.environments.local import _make_run_env
+        import hermes_cli.env_loader as env_loader
+
+        env_loader._SECRET_SOURCES["DATABASE_PASSWORD"] = "onepassword"
+        try:
+            with patch.dict(
+                os.environ,
+                {"PATH": "/usr/bin:/bin", "DATABASE_PASSWORD": "hunter2"},
+                clear=True,
+            ):
+                result = _make_run_env({})
+            assert "DATABASE_PASSWORD" not in result
+        finally:
+            env_loader._SECRET_SOURCES.pop("DATABASE_PASSWORD", None)
+
+    def test_make_run_env_keeps_untracked_var(self):
+        from tools.environments.local import _make_run_env
+        with patch.dict(
+            os.environ,
+            {"PATH": "/usr/bin:/bin", "MY_PROJECT_VAR": "keep-me"},
+            clear=True,
+        ):
+            result = _make_run_env({})
+        assert result.get("MY_PROJECT_VAR") == "keep-me"

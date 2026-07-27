@@ -282,9 +282,13 @@ async def _fetch_secrets_async(
     if vault_name:
         matching_vaults = [v for v in all_vaults if v.title == vault_name]
         if not matching_vaults:
+            # Report a count, not the other accessible vaults' titles —
+            # those are 1Password account data unrelated to the lookup
+            # failure and shouldn't end up in a log/terminal for a vault
+            # name typo.
             raise RuntimeError(
-                f"Vault {vault_name!r} not found.  "
-                f"Accessible vaults: {[v.title for v in all_vaults]}"
+                f"Vault {vault_name!r} not found among "
+                f"{len(all_vaults)} accessible vault(s)."
             )
         if len(matching_vaults) > 1:
             # 1Password permits duplicate vault titles across accounts.
@@ -292,8 +296,7 @@ async def _fetch_secrets_async(
             # the wrong vault — fail loud instead.
             raise RuntimeError(
                 f"Vault name {vault_name!r} is ambiguous: "
-                f"{len(matching_vaults)} vaults share this title "
-                f"(ids: {[v.id for v in matching_vaults]}).  "
+                f"{len(matching_vaults)} vaults share this title.  "
                 "Rename one of the vaults, or contact 1Password admin to "
                 "resolve the duplicate."
             )
@@ -334,9 +337,8 @@ async def _fetch_secrets_async(
         raise RuntimeError(
             f"Item title {item_title!r} is ambiguous: "
             f"{len(matching_overviews)} items share this title across the "
-            f"searched vault(s) (ids: {[ov.id for _, ov in matching_overviews]}).  "
-            "Rename one of the items so the title is unique, or narrow "
-            "secrets.onepassword.vault to a single vault."
+            "searched vault(s).  Rename one of the items so the title is "
+            "unique, or narrow secrets.onepassword.vault to a single vault."
         )
 
     target_vault_id, target_overview = matching_overviews[0]
@@ -359,6 +361,16 @@ async def _fetch_secrets_async(
         value = fld.value
         if not isinstance(value, str) or not value:
             continue
+        if "\x00" in value:
+            # os.environ[k] = v raises ValueError: embedded null byte,
+            # which would abort the caller's loop mid-way through applying
+            # fields (partially injected secrets, skipped source tracking
+            # and stale-key removal for the rest). Strip here, same as the
+            # dotenv path already does for the same reason
+            # (_sanitize_env_file_if_needed above).
+            value = value.replace("\x00", "")
+            if not value:
+                continue
 
         # Apply explicit override first; fall back to derived name.
         if field_mapping and label in field_mapping:

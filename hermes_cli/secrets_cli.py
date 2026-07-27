@@ -630,11 +630,11 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
         )
     except RuntimeError as exc:
         # fetch_onepassword_secrets() only ever raises RuntimeError, and its
-        # message is always safe to display in full — either one of our own
-        # crafted messages (vault/item not found, ambiguous match, timeout)
-        # or "1Password SDK error: <ExceptionTypeName>" with no raw SDK
-        # exception text. Showing it (not just the exception type) is what
-        # lets the user actually fix the problem.
+        # message is now built only from static text, counts, and the
+        # user's own config-provided vault/item names (never from vault
+        # titles or item ids returned by the 1Password Client — those are
+        # deliberately excluded in _fetch_secrets_async, see the comments
+        # there), so it's safe to display in full.
         console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
         return 1
 

@@ -504,3 +504,106 @@ def test_status_surfaces_field_warnings(monkeypatch, tmp_path):
 
     assert status["connection_ok"] is True
     assert status["field_warnings"] == ["Skipping field 'bad label': ..."]
+
+
+# ---------------------------------------------------------------------------
+# Embedded null bytes are stripped, not left to crash os.environ[k]=v (P2)
+# ---------------------------------------------------------------------------
+
+
+def test_null_byte_in_field_value_is_stripped(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Vault1")],
+        items_by_vault={"v1": [_FakeItemOverview("i1", "Hermes")]},
+        items_by_id={
+            "i1": _FakeItem([_FakeField("API KEY", "sek\x00ret")]),
+        },
+    )
+    secrets, warnings = asyncio.run(
+        op._fetch_secrets_async(
+            token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
+        )
+    )
+    assert secrets == {"API_KEY": "sekret"}
+    assert "\x00" not in secrets["API_KEY"]
+
+
+def test_field_value_that_is_only_null_bytes_is_skipped(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Vault1")],
+        items_by_vault={"v1": [_FakeItemOverview("i1", "Hermes")]},
+        items_by_id={
+            "i1": _FakeItem([
+                _FakeField("EMPTY", "\x00\x00"),
+                _FakeField("API KEY", "sekret"),
+            ]),
+        },
+    )
+    secrets, warnings = asyncio.run(
+        op._fetch_secrets_async(
+            token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
+        )
+    )
+    assert "EMPTY" not in secrets
+    assert secrets == {"API_KEY": "sekret"}
+
+
+# ---------------------------------------------------------------------------
+# Vault/item ambiguity errors no longer leak other vaults'/items' titles
+# or ids from the 1Password account (CodeQL clear-text-logging finding)
+# ---------------------------------------------------------------------------
+
+
+def test_vault_not_found_error_omits_other_vault_titles(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Top Secret Executive Vault")],
+        items_by_vault={},
+        items_by_id={},
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(
+            op._fetch_secrets_async(
+                token="t", vault_name="Nope", item_title="Hermes", field_mapping={}
+            )
+        )
+    assert "Top Secret Executive Vault" not in str(excinfo.value)
+
+
+def test_ambiguous_vault_error_omits_vault_ids(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("vault-id-1", "Shared"), _FakeVault("vault-id-2", "Shared")],
+        items_by_vault={},
+        items_by_id={},
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(
+            op._fetch_secrets_async(
+                token="t", vault_name="Shared", item_title="Hermes", field_mapping={}
+            )
+        )
+    assert "vault-id-1" not in str(excinfo.value)
+    assert "vault-id-2" not in str(excinfo.value)
+
+
+def test_ambiguous_item_error_omits_item_ids(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Vault1")],
+        items_by_vault={"v1": [
+            _FakeItemOverview("item-id-1", "Hermes"),
+            _FakeItemOverview("item-id-2", "Hermes"),
+        ]},
+        items_by_id={},
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(
+            op._fetch_secrets_async(
+                token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
+            )
+        )
+    assert "item-id-1" not in str(excinfo.value)
+    assert "item-id-2" not in str(excinfo.value)
