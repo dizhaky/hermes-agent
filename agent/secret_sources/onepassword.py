@@ -61,6 +61,21 @@ _OP_INTEGRATION_VERSION = "1.0.0"
 _CacheKey = Tuple[str, str, str, Tuple[Tuple[str, str], ...]]
 _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 
+# Env var names that must never be auto-injected from 1Password vault fields.
+# These variables can be used to hijack subprocess execution via interpreter
+# hooks, dynamic linker preloads, or shell startup files.
+_DANGEROUS_ENV_VARS: frozenset = frozenset({
+    "BASH_ENV", "ENV",
+    "GIT_SSH_COMMAND", "GIT_SSH", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND", "GIT_ASKPASS",
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+    "NODE_OPTIONS", "NODE_PATH",
+    "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERSITE",
+    "RUBYOPT", "RUBYLIB",
+    "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
+    "PERL5OPT", "PERL5LIB",
+    "CDPATH",
+})
+
 
 @dataclass
 class _CachedFetch:
@@ -336,6 +351,14 @@ async def _fetch_secrets_async(
             warnings.append(
                 f"Skipping field {label!r}: derived env var name "
                 f"{env_name!r} is not a valid identifier"
+            )
+            continue
+
+        if env_name in _DANGEROUS_ENV_VARS:
+            logger.warning(
+                "1Password: skipping field — env var %s is in the "
+                "process-control blocklist and will not be auto-injected",
+                env_name,
             )
             continue
 
