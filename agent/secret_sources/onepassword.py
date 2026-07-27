@@ -144,18 +144,14 @@ def install_onepassword_sdk(*, force: bool = False) -> str:
         )
 
     pkg = "onepassword-sdk>=0.1.0,<2.0.0"
-    cmd = [sys.executable, "-m", "pip", "install", "--quiet"]
+    pip_args = ["--quiet"]
     if force:
-        cmd.append("--force-reinstall")
-    cmd.append(pkg)
+        pip_args.append("--force-reinstall")
+    pip_args.append(pkg)
 
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
+        from hermes_cli.tools_config import _pip_install  # noqa: PLC0415
+        result = _pip_install(pip_args, timeout=120)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"pip install failed: {type(exc).__name__}") from None
 
