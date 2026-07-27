@@ -288,7 +288,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 )
             if result.error:
                 print(
-                    f"  Bitwarden Secrets Manager: sync error ({type(result.error).__name__ if result.error else 'unknown'})",
+                    f"  Bitwarden Secrets Manager: sync error ({result.error})",
                     file=sys.stderr,
                 )
             for warn in result.warnings:
