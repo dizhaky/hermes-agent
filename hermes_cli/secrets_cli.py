@@ -467,7 +467,11 @@ def register_op_cli(parent_parser: argparse.ArgumentParser) -> None:
 
     setup = sub.add_parser(
         "setup",
-        help="Interactive wizard: store service account token, pick vault + item",
+        help=(
+            "Interactive wizard: pick vault + item. "
+            "Provide the service account token via the OP_SERVICE_ACCOUNT_TOKEN "
+            "environment variable, or enter it interactively when prompted."
+        ),
     )
     setup.add_argument(
         "--vault",
@@ -476,10 +480,6 @@ def register_op_cli(parent_parser: argparse.ArgumentParser) -> None:
     setup.add_argument(
         "--item",
         help="Pre-select an item title instead of prompting",
-    )
-    setup.add_argument(
-        "--service-account-token",
-        help="Token used for this setup session only; set OP_SERVICE_ACCOUNT_TOKEN in your environment for persistent use.",
     )
     setup.set_defaults(func=cmd_op_setup)
 
@@ -555,9 +555,21 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
     token_env = secrets_cfg.get("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
 
     import getpass as _getpass  # noqa: PLC0415
-    token = (getattr(args, "service_account_token", None) or "").strip()
+    # Read the token from the environment variable first so the caller never
+    # has to pass it via the process argv (which would expose it in `ps` and
+    # shell history).  Fall back to a secure getpass prompt for interactive
+    # sessions; refuse to continue in non-interactive mode.
+    token = os.environ.get(token_env, "").strip()
     if not token:
-        token = _getpass.getpass(f"  Paste service account token ({token_env}): ").strip()
+        if sys.stdin.isatty():
+            token = _getpass.getpass(f"  Paste service account token ({token_env}): ").strip()
+        else:
+            console.print(
+                f"  [red]Error: {token_env} environment variable is not set "
+                f"and stdin is not a terminal.  "
+                f"Set {token_env}=<your-token> before running this command.[/red]"
+            )
+            return 1
     if not token:
         console.print("  [red]Empty token, aborting.[/red]")
         return 1
