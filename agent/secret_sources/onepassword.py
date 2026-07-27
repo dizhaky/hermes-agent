@@ -53,8 +53,12 @@ SDK_TIMEOUT_SECONDS = 30
 _OP_INTEGRATION_NAME = "hermes-agent"
 _OP_INTEGRATION_VERSION = "1.0.0"
 
-# In-process cache: (vault_name, item_title) → _CachedFetch
-_CacheKey = Tuple[str, str]
+# In-process cache: (vault_name, item_title, token, field_mapping) → _CachedFetch
+# The token and field_mapping are part of the key (not hashed — this is an
+# in-memory dict key, never logged or persisted) so that a rotated service
+# account token or a changed field mapping can never serve stale secrets
+# fetched under a different identity/mapping for the rest of the TTL.
+_CacheKey = Tuple[str, str, str, Tuple[Tuple[str, str], ...]]
 _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 
 
@@ -191,27 +195,29 @@ def _sdk_version() -> str:
 # ---------------------------------------------------------------------------
 
 
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
 def _field_label_to_env_name(label: str) -> str:
     """Convert a 1Password field label to a valid env var name.
 
     Rules applied in order:
-      1. Uppercase the whole string.
+      1. Uppercase the whole string (ASCII case-folding only).
       2. Replace spaces and hyphens with underscores.
-      3. Strip any character that is not alphanumeric or underscore.
+      3. Strip any character outside ``[A-Z0-9_]`` — including non-ASCII
+         letters (e.g. ``clé`` → ``CL``, not a Unicode-derived name), since
+         POSIX shell variable names and HTTP header interpolation both
+         require pure ASCII.
     """
-    name = label.upper()
+    name = label.encode("ascii", errors="ignore").decode("ascii").upper()
     name = re.sub(r"[ \-]", "_", name)
-    name = re.sub(r"[^\w]", "", name)
+    name = re.sub(r"[^A-Z0-9_]", "", name)
     return name
 
 
 def _is_valid_env_name(name: str) -> bool:
-    """Return True if ``name`` is a valid POSIX env-var name."""
-    if not name:
-        return False
-    if not (name[0].isalpha() or name[0] == "_"):
-        return False
-    return all(c.isalnum() or c == "_" for c in name)
+    """Return True if ``name`` is a valid ASCII POSIX env-var name."""
+    return bool(_ENV_NAME_RE.match(name))
 
 
 # ---------------------------------------------------------------------------
@@ -245,13 +251,24 @@ async def _fetch_secrets_async(
     # ------------------------------------------------------------------ vaults
     all_vaults = await asyncio.wait_for(client.vaults.list_all(), timeout=SDK_TIMEOUT_SECONDS)
     if vault_name:
-        matching = [v for v in all_vaults if v.title == vault_name]
-        if not matching:
+        matching_vaults = [v for v in all_vaults if v.title == vault_name]
+        if not matching_vaults:
             raise RuntimeError(
                 f"Vault {vault_name!r} not found.  "
                 f"Accessible vaults: {[v.title for v in all_vaults]}"
             )
-        vault_ids = [matching[0].id]
+        if len(matching_vaults) > 1:
+            # 1Password permits duplicate vault titles across accounts.
+            # Silently picking the first one risks pulling credentials from
+            # the wrong vault — fail loud instead.
+            raise RuntimeError(
+                f"Vault name {vault_name!r} is ambiguous: "
+                f"{len(matching_vaults)} vaults share this title "
+                f"(ids: {[v.id for v in matching_vaults]}).  "
+                "Rename one of the vaults, or contact 1Password admin to "
+                "resolve the duplicate."
+            )
+        vault_ids = [matching_vaults[0].id]
     else:
         vault_ids = [v.id for v in all_vaults]
 
@@ -262,26 +279,39 @@ async def _fetch_secrets_async(
         )
 
     # ------------------------------------------------------------------ item
-    target_item = None
+    # Collect every overview matching item_title across all candidate vaults
+    # first — 1Password permits duplicate item titles within a vault, so
+    # picking the first match found would silently risk injecting
+    # credentials from the wrong item.
+    matching_overviews: List[Tuple[str, object]] = []  # (vault_id, overview)
     for vault_id in vault_ids:
         item_overviews = await asyncio.wait_for(client.items.list_all(vault_id=vault_id), timeout=SDK_TIMEOUT_SECONDS)
         for overview in item_overviews:
             if not item_title or overview.title == item_title:
-                target_item = await asyncio.wait_for(
-                    client.items.get(vault_id=vault_id, item_id=overview.id),
-                    timeout=SDK_TIMEOUT_SECONDS,
-                )
-                break
-        if target_item is not None:
-            break
+                matching_overviews.append((vault_id, overview))
 
-    if target_item is None:
+    if not matching_overviews:
         if item_title:
             raise RuntimeError(
                 f"Item {item_title!r} not found in 1Password "
                 f"(searched {len(vault_ids)} vault(s))."
             )
         return {}, ["No items found in the accessible 1Password vault(s)."]
+
+    if item_title and len(matching_overviews) > 1:
+        raise RuntimeError(
+            f"Item title {item_title!r} is ambiguous: "
+            f"{len(matching_overviews)} items share this title across the "
+            f"searched vault(s) (ids: {[ov.id for _, ov in matching_overviews]}).  "
+            "Rename one of the items so the title is unique, or narrow "
+            "secrets.onepassword.vault to a single vault."
+        )
+
+    target_vault_id, target_overview = matching_overviews[0]
+    target_item = await asyncio.wait_for(
+        client.items.get(vault_id=target_vault_id, item_id=target_overview.id),
+        timeout=SDK_TIMEOUT_SECONDS,
+    )
 
     # ------------------------------------------------------------------ fields
     # First pass: build label → env_name mapping and label → value for all
@@ -361,7 +391,8 @@ def fetch_onepassword_secrets(
     if not token:
         raise RuntimeError("1Password service account token is empty")
 
-    cache_key = (vault_name, item_title)
+    fm_for_key = tuple(sorted((field_mapping or {}).items()))
+    cache_key: _CacheKey = (vault_name, item_title, token, fm_for_key)
     if use_cache:
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
@@ -379,20 +410,30 @@ def fetch_onepassword_secrets(
             has_running_loop = False
 
         if has_running_loop:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                future = pool.submit(
-                    asyncio.run,
-                    _fetch_secrets_async(
-                        token=token,
-                        vault_name=vault_name,
-                        item_title=item_title,
-                        field_mapping=fm,
-                    ),
-                )
-                try:
-                    secrets, warnings = future.result(timeout=SDK_TIMEOUT_SECONDS + 5)
-                except concurrent.futures.TimeoutError:
-                    raise RuntimeError("1Password fetch timed out") from None
+            # Deliberately not a `with` block: ThreadPoolExecutor.__exit__
+            # calls shutdown(wait=True), which would block this call — and
+            # therefore the caller's executor thread — until the worker
+            # actually finishes, defeating the timeout below entirely if
+            # the SDK call hangs past it. shutdown(wait=False) lets the
+            # worker finish (or leak, on true hang) in the background while
+            # this call returns control immediately on timeout.
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(
+                asyncio.run,
+                _fetch_secrets_async(
+                    token=token,
+                    vault_name=vault_name,
+                    item_title=item_title,
+                    field_mapping=fm,
+                ),
+            )
+            try:
+                secrets, warnings = future.result(timeout=SDK_TIMEOUT_SECONDS + 5)
+            except concurrent.futures.TimeoutError:
+                pool.shutdown(wait=False)
+                raise RuntimeError("1Password fetch timed out") from None
+            else:
+                pool.shutdown(wait=False)
         else:
             secrets, warnings = asyncio.run(
                 _fetch_secrets_async(
@@ -424,19 +465,29 @@ def apply_onepassword_secrets(
     config: dict,
     home_path: Path,
     previously_managed: Optional[set] = None,
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], List[str]]:
     """Pull secrets from 1Password and inject them into ``os.environ``.
 
     Called by ``_apply_external_secret_sources()`` in env_loader after
     the dotenv files have loaded.  Parameters come from the
     ``secrets.onepassword.*`` section of ``config.yaml``.
 
-    Returns a dict of ``{env_var_name: "***"}`` for every secret that was
-    actually applied (values are always masked — never logged).  Returns
-    an empty dict on any failure.
+    ``previously_managed`` should contain only env var names that are
+    *currently still* set to the value 1Password last injected for them
+    (the caller is responsible for excluding names a user has since
+    overridden locally, e.g. by editing ``.env``) — this function trusts
+    the set at face value both for refresh-without-override_existing and
+    for removal-on-disappearance below.
+
+    Returns ``(applied, removed)``: ``applied`` maps every env var actually
+    set to the masked value ``"***"`` (real values are never logged).
+    ``removed`` lists env vars that were unset because their 1Password
+    field disappeared from the item (only vars in ``previously_managed``
+    are eligible for removal — untouched vars from other sources are
+    never removed). Returns ``({}, [])`` on any failure.
 
     This function never raises — failures emit a ``logger.warning`` and
-    return ``{}``.
+    return ``({}, [])``.
     """
     token_env = config.get("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
     vault_name = config.get("vault", "")
@@ -452,14 +503,14 @@ def apply_onepassword_secrets(
             "secrets.onepassword.enabled is true but the service account "
             "token env var is not set.  Run `hermes secrets onepassword setup`."
         )
-        return {}
+        return {}, []
 
     if not item_title:
         logger.warning(
             "secrets.onepassword.item is not configured.  "
             "Run `hermes secrets onepassword setup`."
         )
-        return {}
+        return {}, []
 
     # Auto-install the SDK if requested and not present.
     if auto_install and not _check_sdk_available():
@@ -478,14 +529,14 @@ def apply_onepassword_secrets(
                 "(HERMES_DISABLE_LAZY_INSTALLS). "
                 "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
             )
-            return {}
+            return {}, []
 
         try:
             install_onepassword_sdk()
         except Exception as exc:  # noqa: BLE001
             # exc is from pip install — safe to log in full (no token data).
             logger.warning("1Password SDK auto-install failed: %s", exc)
-            return {}
+            return {}, []
 
     try:
         secrets, warnings = fetch_onepassword_secrets(
@@ -504,7 +555,7 @@ def apply_onepassword_secrets(
             "`hermes secrets onepassword status` for details",
             type(exc).__name__,
         )
-        return {}
+        return {}, []
 
     if warnings:
         logger.warning(
@@ -526,10 +577,26 @@ def apply_onepassword_secrets(
         os.environ[key] = value
         applied[key] = "***"
 
+    # A field that vanished from the item (deleted or renamed in 1Password)
+    # is absent from `secrets`.  Remove the stale env var rather than
+    # leaving the old credential active until process restart — but only
+    # for names we know we previously injected ourselves (never touch a
+    # var some other source now owns).
+    removed: List[str] = []
+    if previously_managed:
+        for key in sorted(previously_managed - set(secrets.keys())):
+            if key == token_env:
+                continue
+            if key in os.environ:
+                del os.environ[key]
+                removed.append(key)
+
     if applied:
         logger.debug("1Password: applied %d secret(s)", len(applied))
+    if removed:
+        logger.debug("1Password: removed %d stale secret(s)", len(removed))
 
-    return applied
+    return applied, removed
 
 
 # ---------------------------------------------------------------------------
@@ -537,27 +604,59 @@ def apply_onepassword_secrets(
 # ---------------------------------------------------------------------------
 
 
-def get_onepassword_status(config: dict, home_path: Path) -> dict:
-    """Return a dict describing current configuration and SDK availability.
+def get_onepassword_status(config: dict, home_path: Path, *, check_connection: bool = True) -> dict:
+    """Return a dict describing current configuration, SDK, and connection health.
 
     Used by ``hermes secrets onepassword status`` to populate the table.
+
+    When ``check_connection`` is True (the default) and the SDK is available
+    and a token/item are configured, this performs a real (uncached) fetch
+    to surface the actual failure category — revoked token, vault/item not
+    found, ambiguous match, network error, etc. — rather than only reporting
+    static config presence.  Pass ``check_connection=False`` for callers that
+    just want the cheap static snapshot (e.g. tests, or code paths that
+    already fetch separately).
     """
     token_env = config.get("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
     vault = config.get("vault", "")
     item = config.get("item", "")
+    token = os.environ.get(token_env, "").strip()
+    sdk_available = _check_sdk_available()
+
+    connection_ok: Optional[bool] = None
+    connection_error: Optional[str] = None
+    if check_connection and sdk_available and token and item:
+        try:
+            fetch_onepassword_secrets(
+                token=token,
+                vault_name=vault,
+                item_title=item,
+                field_mapping=config.get("field_mapping") or {},
+                use_cache=False,
+            )
+            connection_ok = True
+        except RuntimeError as exc:
+            connection_ok = False
+            # str(exc) here is one of our own RuntimeError messages (vault/item
+            # not found, ambiguous match, timeout, or a redacted SDK error
+            # type name) — never raw SDK exception text — so it's safe to
+            # surface directly, unlike the taint path in apply_*().
+            connection_error = str(exc)
 
     return {
         "enabled": bool(config.get("enabled")),
-        "sdk_available": _check_sdk_available(),
+        "sdk_available": sdk_available,
         "sdk_version": _sdk_version(),
         "token_env": token_env,
-        "token_set": bool(os.environ.get(token_env, "").strip()),
+        "token_set": bool(token),
         "vault": vault or "(search all vaults)",
         "item": item or "(unset)",
         "override_existing": bool(config.get("override_existing", False)),
         "cache_ttl_seconds": config.get("cache_ttl_seconds", 300),
         "auto_install": bool(config.get("auto_install", True)),
         "field_mapping": config.get("field_mapping") or {},
+        "connection_ok": connection_ok,
+        "connection_error": connection_error,
     }
 
 
