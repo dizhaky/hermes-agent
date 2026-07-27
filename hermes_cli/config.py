@@ -2417,6 +2417,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "OP_SERVICE_ACCOUNT_TOKEN": {
+        "description": "1Password service account token for secrets injection (ops_...)",
+        "prompt": "1Password service account token",
+        "url": "https://developer.1password.com/docs/service-accounts/",
+        "password": True,
+        "category": "tool",
+    },
 
     # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
     # These use category="skill" (distinct from "tool") so the sandbox
