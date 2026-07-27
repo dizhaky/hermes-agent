@@ -287,11 +287,6 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                     file=sys.stderr,
                 )
             if result.error:
-                # Do NOT include result.error in the print — it may contain
-                # subprocess output (bws stderr) which flows from credentials
-                # and would be flagged as clear-text logging of sensitive data.
-                # The actual error is available at DEBUG level for diagnostics.
-                logger.debug("Bitwarden sync error detail: %s", result.error)
                 print(
                     "  Bitwarden Secrets Manager: sync failed"
                     " (run `hermes secrets bitwarden setup` to diagnose)",
