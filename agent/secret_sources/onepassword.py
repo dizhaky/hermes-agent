@@ -335,10 +335,12 @@ async def _fetch_secrets_async(
     )
 
     # ------------------------------------------------------------------ fields
-    # First pass: build label → env_name mapping and label → value for all
-    # non-empty fields with valid env var names.
-    field_to_env: Dict[str, str] = {}   # field label → env var name
-    field_values: Dict[str, str] = {}   # field label → secret value
+    # Single pass: derive (label, env_name, value) for every eligible field
+    # into a LIST, not a label-keyed dict — two fields sharing the exact
+    # same label (1Password permits duplicate labels within an item) must
+    # both survive to the collision scan below rather than one silently
+    # overwriting the other in a dict before collision detection ever runs.
+    entries: List[Tuple[str, str, str]] = []  # (label, env_name, value)
     warnings: List[str] = []
 
     for fld in target_item.fields:
@@ -370,27 +372,29 @@ async def _fetch_secrets_async(
             )
             continue
 
-        field_to_env[label] = env_name
-        field_values[label] = value
+        entries.append((label, env_name, value))
 
-    # Detect collisions: two fields that normalize to the same env var name.
+    # Detect collisions: two fields — whether they share a label or not —
+    # that normalize to the same env var name. A duplicate label produces
+    # two distinct list entries here (unlike the old dict-based version),
+    # so it's caught by the exact same logic as a cross-label collision.
     env_name_sources: Dict[str, str] = {}  # env_name → first field label
     collisions: set = set()
-    for field_name, env_name in field_to_env.items():
+    for label, env_name, _value in entries:
         if env_name in env_name_sources:
             logger.warning(
                 "1Password field mapping collision: '%s' and '%s' both map to '%s'; skipping both",
-                env_name_sources[env_name], field_name, env_name,
+                env_name_sources[env_name], label, env_name,
             )
             collisions.add(env_name)
         else:
-            env_name_sources[env_name] = field_name
+            env_name_sources[env_name] = label
 
     # Build final secrets dict, excluding colliding env names.
     secrets: Dict[str, str] = {
-        field_to_env[label]: value
-        for label, value in field_values.items()
-        if field_to_env[label] not in collisions
+        env_name: value
+        for _label, env_name, value in entries
+        if env_name not in collisions
     }
 
     return secrets, warnings
@@ -649,13 +653,17 @@ def get_onepassword_status(config: dict, home_path: Path, *, check_connection: b
 
     Used by ``hermes secrets onepassword status`` to populate the table.
 
-    When ``check_connection`` is True (the default) and the SDK is available
-    and a token/item are configured, this performs a real (uncached) fetch
-    to surface the actual failure category — revoked token, vault/item not
-    found, ambiguous match, network error, etc. — rather than only reporting
-    static config presence.  Pass ``check_connection=False`` for callers that
-    just want the cheap static snapshot (e.g. tests, or code paths that
-    already fetch separately).
+    When ``check_connection`` is True (the default), the integration is
+    enabled, the SDK is available, and a token/item are configured, this
+    performs a real (uncached) fetch to surface the actual failure category
+    — revoked token, vault/item not found, ambiguous match, network error,
+    etc. — rather than only reporting static config presence.  Disabled mode
+    never contacts the SDK, matching the rest of the integration's
+    master-switch contract — a disabled config can still have a leftover
+    token/vault/item from before it was turned off, and status shouldn't
+    make a network call (or wait out the timeout) just to report that.  Pass
+    ``check_connection=False`` for callers that just want the cheap static
+    snapshot (e.g. tests, or code paths that already fetch separately).
     """
     token_env = config.get("service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN")
     vault = config.get("vault", "")
@@ -665,7 +673,7 @@ def get_onepassword_status(config: dict, home_path: Path, *, check_connection: b
 
     connection_ok: Optional[bool] = None
     connection_error: Optional[str] = None
-    if check_connection and sdk_available and token and item:
+    if check_connection and config.get("enabled") and sdk_available and token and item:
         try:
             fetch_onepassword_secrets(
                 token=token,

@@ -388,4 +388,15 @@ def _load_secrets_config(home_path: Path) -> dict:
             data = yaml.safe_load(f) or {}
     except Exception:  # noqa: BLE001
         return {}
-    return data.get("secrets") or {}
+    secrets = data.get("secrets") or {}
+    # Apply the same ${VAR_NAME} expansion the canonical load_config() path
+    # applies — this is a separate, isolated loader (see docstring above),
+    # so without this a documented ${OP_VAULT}-style value in vault/item/
+    # service_account_token_env would reach fetch_onepassword_secrets() as
+    # a literal, unexpanded string and fail to resolve.
+    try:
+        from hermes_cli.config import _expand_env_vars
+        secrets = _expand_env_vars(secrets)
+    except ImportError:
+        pass
+    return secrets

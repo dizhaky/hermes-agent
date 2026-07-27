@@ -121,6 +121,27 @@ def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch)
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
 
 
+def test_load_secrets_config_expands_env_vars(tmp_path, monkeypatch):
+    """${VAR} references in secrets.* config values must be expanded the
+    same way the canonical load_config() path expands them — otherwise a
+    documented ${OP_VAULT}-style value reaches fetch_onepassword_secrets()
+    as a literal, unresolvable string."""
+    monkeypatch.setenv("OP_VAULT_NAME", "Prod Vault")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    vault: ${OP_VAULT_NAME}\n"
+        "    item: Hermes\n",
+        encoding="utf-8",
+    )
+
+    secrets_cfg = env_loader._load_secrets_config(tmp_path)
+
+    assert secrets_cfg["onepassword"]["vault"] == "Prod Vault"
+
+
 def test_apply_external_secret_sources_records_onepassword_origin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config_path = tmp_path / "config.yaml"

@@ -317,3 +317,99 @@ def test_apply_never_removes_unmanaged_key(monkeypatch, tmp_path):
     assert removed == []
     import os
     assert os.environ["UNRELATED_KEY"] == "keep-me"
+
+
+# ---------------------------------------------------------------------------
+# Duplicate field labels are rejected, not silently collapsed (P1 finding)
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_field_labels_rejected(monkeypatch):
+    """Two fields sharing the exact same label must both be dropped as a
+    collision, not have the second silently overwrite the first in a
+    label-keyed dict before collision detection ever runs."""
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Vault1")],
+        items_by_vault={"v1": [_FakeItemOverview("i1", "Hermes")]},
+        items_by_id={
+            "i1": _FakeItem([
+                _FakeField("API KEY", "first-value"),
+                _FakeField("API KEY", "second-value"),
+            ])
+        },
+    )
+    secrets, warnings = asyncio.run(
+        op._fetch_secrets_async(
+            token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
+        )
+    )
+    # Neither value should win — both are dropped as an ambiguous collision.
+    assert "API_KEY" not in secrets
+    assert secrets == {}
+
+
+def test_duplicate_labels_do_not_shadow_a_third_distinct_field(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Vault1")],
+        items_by_vault={"v1": [_FakeItemOverview("i1", "Hermes")]},
+        items_by_id={
+            "i1": _FakeItem([
+                _FakeField("API KEY", "first-value"),
+                _FakeField("API KEY", "second-value"),
+                _FakeField("OTHER FIELD", "unaffected-value"),
+            ])
+        },
+    )
+    secrets, warnings = asyncio.run(
+        op._fetch_secrets_async(
+            token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
+        )
+    )
+    assert "API_KEY" not in secrets
+    assert secrets == {"OTHER_FIELD": "unaffected-value"}
+
+
+# ---------------------------------------------------------------------------
+# get_onepassword_status skips the live connection check when disabled (P2)
+# ---------------------------------------------------------------------------
+
+
+def test_status_skips_connection_check_when_disabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("OP_TOKEN", "tok")
+    monkeypatch.setattr(op, "_check_sdk_available", lambda: True)
+
+    def _boom(**kw):
+        raise AssertionError("fetch_onepassword_secrets must not be called when disabled")
+
+    monkeypatch.setattr(op, "fetch_onepassword_secrets", _boom)
+
+    status = op.get_onepassword_status(
+        {
+            "enabled": False,
+            "service_account_token_env": "OP_TOKEN",
+            "item": "Hermes",
+        },
+        tmp_path,
+    )
+
+    assert status["connection_ok"] is None
+    assert status["connection_error"] is None
+
+
+def test_status_checks_connection_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("OP_TOKEN", "tok")
+    monkeypatch.setattr(op, "_check_sdk_available", lambda: True)
+    monkeypatch.setattr(op, "fetch_onepassword_secrets", lambda **kw: ({"X": "v"}, []))
+
+    status = op.get_onepassword_status(
+        {
+            "enabled": True,
+            "service_account_token_env": "OP_TOKEN",
+            "item": "Hermes",
+        },
+        tmp_path,
+    )
+
+    assert status["connection_ok"] is True
