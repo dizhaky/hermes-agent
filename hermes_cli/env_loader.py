@@ -204,6 +204,7 @@ def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
     project_env: str | os.PathLike | None = None,
+    skip_external_secrets: bool = False,
 ) -> list[Path]:
     """Load Hermes environment files with user config taking precedence.
 
@@ -212,6 +213,15 @@ def load_hermes_dotenv(
     - project `.env` acts as a dev fallback and only fills missing values when
       the user env exists.
     - if no user env exists, the project `.env` also overrides stale shell vars.
+
+    ``skip_external_secrets``: pass True to load plain dotenv files only and
+    skip contacting any configured external secret source (Bitwarden,
+    1Password). ``hermes_cli.main`` calls this at import time for every
+    invocation, including ``hermes secrets <source> disable/setup/status``
+    — without this, trying to disable a hanging or misconfigured source
+    would itself have to wait through a full bootstrap attempt (SDK
+    auto-install, network fetch, timeout) before the disable command even
+    got a chance to run.
     """
     loaded: list[Path] = []
 
@@ -240,7 +250,8 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
-    _apply_external_secret_sources(home_path)
+    if not skip_external_secrets:
+        _apply_external_secret_sources(home_path)
 
     return loaded
 

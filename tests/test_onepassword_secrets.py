@@ -54,6 +54,15 @@ def test_is_valid_env_name_rejects_unicode_letters():
     assert op._is_valid_env_name("") is False
 
 
+def test_is_valid_env_name_rejects_trailing_newline():
+    # re.match(r"...$", ...) matches just before a trailing "\n" even
+    # though the "\n" itself was never consumed by the pattern — a YAML
+    # literal-block field_mapping value commonly has exactly this shape.
+    assert op._is_valid_env_name("OPENAI_API_KEY\n") is False
+    assert op._is_valid_env_name("OPENAI_API_KEY\n\n") is False
+    assert op._is_valid_env_name("OPENAI_API_KEY") is True
+
+
 # ---------------------------------------------------------------------------
 # Cache key includes token + field_mapping identity (P1 finding)
 # ---------------------------------------------------------------------------
@@ -118,6 +127,29 @@ def test_cache_hit_same_identity(monkeypatch):
     op.fetch_onepassword_secrets(token="t", vault_name="v", item_title="i", use_cache=True)
 
     assert len(calls) == 1  # identical identity => cache hit on the second call
+
+
+def test_rotated_token_evicts_old_cache_entry(monkeypatch):
+    """A long-lived gateway that rotates its service account token must not
+    keep the old token/entry reachable in _CACHE forever — that's an
+    unbounded memory leak of prior bootstrap tokens and fetched secrets."""
+
+    async def _fake_fetch(*, token, vault_name, item_title, field_mapping):
+        return {"KEY": f"secret-for-{token}"}, []
+
+    monkeypatch.setattr(op, "_fetch_secrets_async", _fake_fetch)
+    monkeypatch.setattr(op, "_ensure_sdk", lambda: None)
+
+    op.fetch_onepassword_secrets(token="token-a", vault_name="v", item_title="i", use_cache=True)
+    assert len(op._CACHE) == 1
+
+    op.fetch_onepassword_secrets(token="token-b", vault_name="v", item_title="i", use_cache=True)
+
+    # Still exactly one entry for this (vault, item) slot — the old
+    # token-a entry was evicted, not left to accumulate.
+    assert len(op._CACHE) == 1
+    remaining_key = next(iter(op._CACHE))
+    assert remaining_key[2] == "token-b"
 
 
 # ---------------------------------------------------------------------------

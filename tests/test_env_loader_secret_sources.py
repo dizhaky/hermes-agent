@@ -121,6 +121,29 @@ def test_apply_external_secret_sources_noop_when_disabled(tmp_path, monkeypatch)
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") is None
 
 
+def test_load_hermes_dotenv_skip_external_secrets(tmp_path, monkeypatch):
+    """skip_external_secrets=True (used for `hermes secrets ...` management
+    commands) must not touch external sources at all — e.g. so `hermes
+    secrets onepassword disable` doesn't have to bootstrap the very
+    integration it's trying to turn off before it can run."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  onepassword:\n"
+        "    enabled: true\n"
+        "    item: Hermes\n",
+        encoding="utf-8",
+    )
+
+    def _boom(home_path):
+        raise AssertionError("_apply_external_secret_sources must not run")
+
+    monkeypatch.setattr(env_loader, "_apply_external_secret_sources", _boom)
+
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path, skip_external_secrets=True)
+
+
 def test_load_secrets_config_expands_env_vars(tmp_path, monkeypatch):
     """${VAR} references in secrets.* config values must be expanded the
     same way the canonical load_config() path expands them — otherwise a

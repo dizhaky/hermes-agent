@@ -213,7 +213,7 @@ def _sdk_version() -> str:
 # ---------------------------------------------------------------------------
 
 
-_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*\Z")
 
 
 def _field_label_to_env_name(label: str) -> str:
@@ -495,6 +495,20 @@ def fetch_onepassword_secrets(
         # propagating token data that may appear in the SDK's error message
         # (CodeQL py/clear-text-logging-sensitive-data taint path).
         raise RuntimeError(f"1Password SDK error: {type(exc).__name__}") from None
+
+    # Evict any other cache entries for this same (vault, item) slot — e.g.
+    # left behind by a rotated token or a changed field_mapping — before
+    # inserting the new one. Without this, a long-lived gateway that goes
+    # through routine credential rotation accumulates one _CachedFetch per
+    # old identity forever, each one keeping a prior bootstrap token and
+    # its fetched secret values reachable for the rest of the process
+    # lifetime.
+    stale_keys = [
+        k for k in _CACHE
+        if k[0] == vault_name and k[1] == item_title and k != cache_key
+    ]
+    for k in stale_keys:
+        del _CACHE[k]
 
     _CACHE[cache_key] = _CachedFetch(secrets=secrets, fetched_at=time.time())
     return secrets, warnings
