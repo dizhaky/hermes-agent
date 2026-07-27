@@ -746,12 +746,17 @@ def cmd_op_status(args: argparse.Namespace) -> int:
         )
         return 1
     if status["field_warnings"]:
+        # Count only, not the warning text itself — each entry embeds the
+        # 1Password field label (see _fetch_secrets_async's "Skipping field
+        # {label!r}" message), which CodeQL's clear-text-logging taint
+        # tracking treats as sensitive the same as a value, since it
+        # originates from the same tainted item.fields source.
         console.print(
             f"\n  [yellow]{len(status['field_warnings'])} field(s) skipped "
-            "during the connection check:[/yellow]"
+            "during the connection check — check the field labels in the "
+            "1Password item for names that collide, are invalid, or are "
+            "blocklisted (PATH, EDITOR, etc.).[/yellow]"
         )
-        for warn in status["field_warnings"]:
-            console.print(f"    - {warn}")
     return 0
 
 

@@ -315,9 +315,16 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                     " (run `hermes secrets bitwarden setup` to diagnose)",
                     file=sys.stderr,
                 )
-            for warn in result.warnings:
+            if result.warnings:
+                # Count only, not the warning text itself — each entry
+                # embeds the Bitwarden secret *key* (see
+                # agent/secret_sources/bitwarden.py's "Skipping secret
+                # {key!r}" message), which CodeQL's clear-text-logging
+                # taint tracking treats as sensitive the same as a value.
                 print(
-                    f"  Bitwarden Secrets Manager: {warn}",
+                    f"  Bitwarden Secrets Manager: {len(result.warnings)} "
+                    f"secret{'s' if len(result.warnings) != 1 else ''} skipped "
+                    "(run `hermes secrets bitwarden setup` to diagnose)",
                     file=sys.stderr,
                 )
 
