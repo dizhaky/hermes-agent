@@ -37,7 +37,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +65,14 @@ _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 # These variables can be used to hijack subprocess execution via interpreter
 # hooks, dynamic linker preloads, or shell startup files.
 _DANGEROUS_ENV_VARS: frozenset = frozenset({
-    "BASH_ENV", "ENV",
+    "PATH",
+    "BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS", "PROMPT_COMMAND", "IFS", "PS4",
     "GIT_SSH_COMMAND", "GIT_SSH", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND", "GIT_ASKPASS",
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+    "SSH_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_CONFIG",
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
     "NODE_OPTIONS", "NODE_PATH",
-    "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERSITE",
+    "PYTHONPATH", "PYTHONSTARTUP", "PYTHONUSERSITE", "PYTHONHOME",
     "RUBYOPT", "RUBYLIB",
     "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
     "PERL5OPT", "PERL5LIB",
@@ -298,7 +301,10 @@ async def _fetch_secrets_async(
     # first — 1Password permits duplicate item titles within a vault, so
     # picking the first match found would silently risk injecting
     # credentials from the wrong item.
-    matching_overviews: List[Tuple[str, object]] = []  # (vault_id, overview)
+    # `Any` (not `object`) — these are SDK-defined item-overview objects with
+    # a `.title`/`.id` shape, but the SDK package isn't installed at
+    # type-check time so there's no real type to name here.
+    matching_overviews: List[Tuple[str, Any]] = []  # (vault_id, overview)
     for vault_id in vault_ids:
         item_overviews = await asyncio.wait_for(client.items.list_all(vault_id=vault_id), timeout=SDK_TIMEOUT_SECONDS)
         for overview in item_overviews:
@@ -354,7 +360,9 @@ async def _fetch_secrets_async(
             )
             continue
 
-        if env_name in _DANGEROUS_ENV_VARS:
+        # BASH_FUNC_x%% is how bash exports shell functions via env vars —
+        # blanket-block the family rather than enumerate function names.
+        if env_name in _DANGEROUS_ENV_VARS or env_name.startswith("BASH_FUNC_"):
             logger.warning(
                 "1Password: skipping field — env var %s is in the "
                 "process-control blocklist and will not be auto-injected",
@@ -451,7 +459,16 @@ def fetch_onepassword_secrets(
                 ),
             )
             try:
-                secrets, warnings = future.result(timeout=SDK_TIMEOUT_SECONDS + 5)
+                # cast(): pool.submit(asyncio.run, coro) can't be inferred
+                # through by the type checker (asyncio.run's generic return
+                # type doesn't unify across submit's Callable[_P, _T] — a
+                # known type-checker limitation, not a real type error),
+                # which otherwise surfaces as a spurious "not-iterable"
+                # warning on this unpacking.
+                secrets, warnings = cast(
+                    Tuple[Dict[str, str], List[str]],
+                    future.result(timeout=SDK_TIMEOUT_SECONDS + 5),
+                )
             except concurrent.futures.TimeoutError:
                 pool.shutdown(wait=False)
                 raise RuntimeError("1Password fetch timed out") from None

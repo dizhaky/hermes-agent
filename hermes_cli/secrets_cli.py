@@ -622,8 +622,14 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
             field_mapping=secrets_cfg.get("field_mapping") or {},
             use_cache=False,
         )
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗ Fetch failed: {type(exc).__name__}[/red]")
+    except RuntimeError as exc:
+        # fetch_onepassword_secrets() only ever raises RuntimeError, and its
+        # message is always safe to display in full — either one of our own
+        # crafted messages (vault/item not found, ambiguous match, timeout)
+        # or "1Password SDK error: <ExceptionTypeName>" with no raw SDK
+        # exception text. Showing it (not just the exception type) is what
+        # lets the user actually fix the problem.
+        console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
         return 1
 
     if not secrets:
@@ -772,8 +778,10 @@ def cmd_op_sync(args: argparse.Namespace) -> int:
             field_mapping=field_mapping,
             use_cache=False,
         )
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"[red]Fetch failed: {type(exc).__name__}[/red]")
+    except RuntimeError as exc:
+        # See the matching comment in cmd_op_setup: this message is always
+        # safe to show in full.
+        console.print(f"[red]Fetch failed: {exc}[/red]")
         return 1
 
     if not secrets:

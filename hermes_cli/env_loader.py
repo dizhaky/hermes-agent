@@ -351,10 +351,14 @@ def _apply_external_secret_sources(home_path: Path) -> None:
                 _SECRET_SOURCES.pop(name, None)
                 _SECRET_VALUES.pop(name, None)
             if op_removed:
+                # Env var *names*, not values — but keep the same
+                # count-only convention as the Bitwarden branch above
+                # rather than interpolating them, since CodeQL's clear-text
+                # logging taint tracking doesn't distinguish "name" from
+                # "value" once either has touched the secrets pipeline.
                 print(
                     f"  1Password Secrets Manager: removed {len(op_removed)} "
-                    f"secret{'s' if len(op_removed) != 1 else ''} no longer in the item "
-                    f"({', '.join(sorted(op_removed))})",
+                    f"secret{'s' if len(op_removed) != 1 else ''} no longer in the item",
                     file=sys.stderr,
                 )
         except Exception as exc:  # noqa: BLE001
