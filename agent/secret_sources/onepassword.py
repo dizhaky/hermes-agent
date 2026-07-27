@@ -91,6 +91,58 @@ _DANGEROUS_ENV_VARS: frozenset = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Error categories
+# ---------------------------------------------------------------------------
+#
+# Distinct RuntimeError subclasses (rather than one generic RuntimeError
+# with a descriptive message) so that `type(exc).__name__` alone is a
+# meaningful failure category. This matters because several call sites
+# display *only* the exception type, never str(exc): CodeQL's clear-text-
+# logging taint tracking follows data through exception messages built
+# from anything the authenticated 1Password Client returned (vault/item
+# lists), all the way to any print/log of str(exc) — regardless of
+# whether the literal message text still contains sensitive substrings.
+# A distinct class per failure kind is what lets the UI stay useful
+# without ever needing str(exc).
+
+
+class OnePasswordSDKNotInstalledError(RuntimeError):
+    pass
+
+
+class VaultNotFoundError(RuntimeError):
+    pass
+
+
+class VaultAmbiguousError(RuntimeError):
+    pass
+
+
+class NoVaultsAccessibleError(RuntimeError):
+    pass
+
+
+class ItemNotFoundError(RuntimeError):
+    pass
+
+
+class ItemAmbiguousError(RuntimeError):
+    pass
+
+
+class EmptyTokenError(RuntimeError):
+    pass
+
+
+class FetchTimeoutError(RuntimeError):
+    pass
+
+
+class SDKCallError(RuntimeError):
+    pass
+
+
 @dataclass
 class _CachedFetch:
     secrets: Dict[str, str]
@@ -138,9 +190,9 @@ def _check_sdk_available() -> bool:
 
 
 def _ensure_sdk() -> None:
-    """Raise :class:`RuntimeError` if the SDK is not available."""
+    """Raise :class:`OnePasswordSDKNotInstalledError` if the SDK is unavailable."""
     if not _check_sdk_available():
-        raise RuntimeError(
+        raise OnePasswordSDKNotInstalledError(
             "The 'onepassword' Python SDK is not installed.  "
             "Run `hermes secrets onepassword install` or "
             f"`pip install '{OP_SDK_REQUIREMENT}'` to install it."
@@ -286,7 +338,7 @@ async def _fetch_secrets_async(
             # those are 1Password account data unrelated to the lookup
             # failure and shouldn't end up in a log/terminal for a vault
             # name typo.
-            raise RuntimeError(
+            raise VaultNotFoundError(
                 f"Vault {vault_name!r} not found among "
                 f"{len(all_vaults)} accessible vault(s)."
             )
@@ -294,7 +346,7 @@ async def _fetch_secrets_async(
             # 1Password permits duplicate vault titles across accounts.
             # Silently picking the first one risks pulling credentials from
             # the wrong vault — fail loud instead.
-            raise RuntimeError(
+            raise VaultAmbiguousError(
                 f"Vault name {vault_name!r} is ambiguous: "
                 f"{len(matching_vaults)} vaults share this title.  "
                 "Rename one of the vaults, or contact 1Password admin to "
@@ -305,7 +357,7 @@ async def _fetch_secrets_async(
         vault_ids = [v.id for v in all_vaults]
 
     if not vault_ids:
-        raise RuntimeError(
+        raise NoVaultsAccessibleError(
             "No vaults are accessible to this service account.  "
             "Check vault permissions in the 1Password admin console."
         )
@@ -327,14 +379,14 @@ async def _fetch_secrets_async(
 
     if not matching_overviews:
         if item_title:
-            raise RuntimeError(
+            raise ItemNotFoundError(
                 f"Item {item_title!r} not found in 1Password "
                 f"(searched {len(vault_ids)} vault(s))."
             )
         return {}, ["No items found in the accessible 1Password vault(s)."]
 
     if item_title and len(matching_overviews) > 1:
-        raise RuntimeError(
+        raise ItemAmbiguousError(
             f"Item title {item_title!r} is ambiguous: "
             f"{len(matching_overviews)} items share this title across the "
             "searched vault(s).  Rename one of the items so the title is "
@@ -447,7 +499,7 @@ def fetch_onepassword_secrets(
     propagate so the user sees a clear error.
     """
     if not token:
-        raise RuntimeError("1Password service account token is empty")
+        raise EmptyTokenError("1Password service account token is empty")
 
     fm_for_key = tuple(sorted((field_mapping or {}).items()))
     cache_key: _CacheKey = (vault_name, item_title, token, fm_for_key)
@@ -498,7 +550,7 @@ def fetch_onepassword_secrets(
                 )
             except concurrent.futures.TimeoutError:
                 pool.shutdown(wait=False)
-                raise RuntimeError("1Password fetch timed out") from None
+                raise FetchTimeoutError("1Password fetch timed out") from None
             else:
                 pool.shutdown(wait=False)
         else:
@@ -517,7 +569,7 @@ def fetch_onepassword_secrets(
         # Use only the exception type name — not str(exc) — to avoid
         # propagating token data that may appear in the SDK's error message
         # (CodeQL py/clear-text-logging-sensitive-data taint path).
-        raise RuntimeError(f"1Password SDK error: {type(exc).__name__}") from None
+        raise SDKCallError(f"1Password SDK error: {type(exc).__name__}") from None
 
     # Evict any other cache entries for this same (vault, item) slot — e.g.
     # left behind by a rotated token or a changed field_mapping — before
@@ -724,11 +776,14 @@ def get_onepassword_status(config: dict, home_path: Path, *, check_connection: b
             connection_ok = True
         except RuntimeError as exc:
             connection_ok = False
-            # str(exc) here is one of our own RuntimeError messages (vault/item
-            # not found, ambiguous match, timeout, or a redacted SDK error
-            # type name) — never raw SDK exception text — so it's safe to
-            # surface directly, unlike the taint path in apply_*().
-            connection_error = str(exc)
+            # Category only (the exception's class name, e.g.
+            # "VaultNotFoundError", "ItemAmbiguousError") — never str(exc).
+            # Each distinct failure kind is its own RuntimeError subclass
+            # (see "Error categories" above) specifically so this alone is
+            # informative without ever needing the message text, which
+            # CodeQL's clear-text-logging taint tracking follows all the
+            # way from the authenticated 1Password Client's return values.
+            connection_error = type(exc).__name__
 
     return {
         "enabled": bool(config.get("enabled")),

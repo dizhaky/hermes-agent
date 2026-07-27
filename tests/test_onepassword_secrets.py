@@ -218,7 +218,7 @@ def test_ambiguous_vault_name_rejected(monkeypatch):
         items_by_vault={},
         items_by_id={},
     )
-    with pytest.raises(RuntimeError, match="ambiguous"):
+    with pytest.raises(op.VaultAmbiguousError, match="ambiguous"):
         asyncio.run(
             op._fetch_secrets_async(
                 token="t", vault_name="Shared", item_title="Hermes", field_mapping={}
@@ -236,7 +236,7 @@ def test_ambiguous_item_title_rejected(monkeypatch):
         ]},
         items_by_id={},
     )
-    with pytest.raises(RuntimeError, match="ambiguous"):
+    with pytest.raises(op.ItemAmbiguousError, match="ambiguous"):
         asyncio.run(
             op._fetch_secrets_async(
                 token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
@@ -428,6 +428,34 @@ def test_status_skips_connection_check_when_disabled(monkeypatch, tmp_path):
 
     assert status["connection_ok"] is None
     assert status["connection_error"] is None
+
+
+def test_status_connection_error_is_exception_category_only(monkeypatch, tmp_path):
+    """connection_error must be the exception's class name, never str(exc)
+    — see the "Error categories" comment in onepassword.py. A raw message
+    could embed vault titles/item ids returned by the 1Password Client."""
+
+    def _boom(**kw):
+        raise op.VaultAmbiguousError(
+            "Vault name 'Top Secret Vault' is ambiguous: 3 vaults share this title."
+        )
+
+    monkeypatch.setenv("OP_TOKEN", "tok")
+    monkeypatch.setattr(op, "_check_sdk_available", lambda: True)
+    monkeypatch.setattr(op, "fetch_onepassword_secrets", _boom)
+
+    status = op.get_onepassword_status(
+        {
+            "enabled": True,
+            "service_account_token_env": "OP_TOKEN",
+            "item": "Hermes",
+        },
+        tmp_path,
+    )
+
+    assert status["connection_ok"] is False
+    assert status["connection_error"] == "VaultAmbiguousError"
+    assert "Top Secret Vault" not in status["connection_error"]
 
 
 def test_status_checks_connection_when_enabled(monkeypatch, tmp_path):

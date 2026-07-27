@@ -629,13 +629,9 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
             use_cache=False,
         )
     except RuntimeError as exc:
-        # fetch_onepassword_secrets() only ever raises RuntimeError, and its
-        # message is now built only from static text, counts, and the
-        # user's own config-provided vault/item names (never from vault
-        # titles or item ids returned by the 1Password Client — those are
-        # deliberately excluded in _fetch_secrets_async, see the comments
-        # there), so it's safe to display in full.
-        console.print(f"  [red]✗ Fetch failed: {exc}[/red]")
+        # Category only (exception class name), never str(exc) — see the
+        # "Error categories" comment in agent/secret_sources/onepassword.py.
+        console.print(f"  [red]✗ Fetch failed: {type(exc).__name__}[/red]")
         return 1
 
     if not secrets:
@@ -797,9 +793,8 @@ def cmd_op_sync(args: argparse.Namespace) -> int:
             use_cache=False,
         )
     except RuntimeError as exc:
-        # See the matching comment in cmd_op_setup: this message is always
-        # safe to show in full.
-        console.print(f"[red]Fetch failed: {exc}[/red]")
+        # Category only — see cmd_op_setup's matching comment.
+        console.print(f"[red]Fetch failed: {type(exc).__name__}[/red]")
         return 1
 
     if not secrets:
