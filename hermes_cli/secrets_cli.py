@@ -824,7 +824,7 @@ def cmd_op_install(args: argparse.Namespace) -> int:
 
     console = Console()
     try:
-        ver = op.install_onepassword_sdk(force=bool(args.force))
+        ver = op.install_onepassword_sdk(force=bool(args.force), skip_gate=True)
         console.print(f"[green]✓[/green] onepassword-sdk  ({ver})")
         return 0
     except Exception as exc:  # noqa: BLE001

@@ -114,12 +114,21 @@ def _ensure_sdk() -> None:
         )
 
 
-def install_onepassword_sdk(*, force: bool = False) -> str:
+def install_onepassword_sdk(*, force: bool = False, skip_gate: bool = False) -> str:
     """Install the ``onepassword-sdk`` package via pip.
 
     Returns a short version string on success.  Raises :class:`ImportError`
     if the lazy install gate is disabled, or :class:`RuntimeError` on pip
     failure — callers in the auto-install path catch these.
+
+    Args:
+        force: Re-install even if the SDK is already present.
+        skip_gate: When True, bypass the HERMES_DISABLE_LAZY_INSTALLS gate.
+            Pass ``True`` only from explicit user commands (e.g.
+            ``hermes secrets onepassword install``) so that users can install
+            the SDK even in environments where auto-installs are disabled.
+            The auto-install path inside ``apply_onepassword_secrets()`` should
+            leave this at the default ``False`` so the gate is still respected.
     """
     import subprocess  # noqa: PLC0415 — lazy import
 
@@ -128,20 +137,22 @@ def install_onepassword_sdk(*, force: bool = False) -> str:
         return _sdk_version()
 
     # Honor the same lazy install gate used by the rest of the codebase
-    # (tools.lazy_deps._allow_lazy_installs / HERMES_DISABLE_LAZY_INSTALLS).
-    try:
-        from tools.lazy_deps import _allow_lazy_installs  # noqa: PLC0415
-        _lazy_ok = _allow_lazy_installs()
-    except ImportError:
-        # Fallback: read the env var directly if the module isn't importable.
-        _dis = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower()
-        _lazy_ok = _dis not in ("1", "true", "yes")
+    # (tools.lazy_deps._allow_lazy_installs / HERMES_DISABLE_LAZY_INSTALLS),
+    # unless the caller explicitly opted out of the gate (skip_gate=True).
+    if not skip_gate:
+        try:
+            from tools.lazy_deps import _allow_lazy_installs  # noqa: PLC0415
+            _lazy_ok = _allow_lazy_installs()
+        except ImportError:
+            # Fallback: read the env var directly if the module isn't importable.
+            _dis = os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower()
+            _lazy_ok = _dis not in ("1", "true", "yes")
 
-    if not _lazy_ok:
-        raise ImportError(
-            "1Password SDK auto-install is disabled (HERMES_DISABLE_LAZY_INSTALLS). "
-            "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
-        )
+        if not _lazy_ok:
+            raise ImportError(
+                "1Password SDK auto-install is disabled (HERMES_DISABLE_LAZY_INSTALLS). "
+                "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
+            )
 
     pkg = "onepassword-sdk>=0.1.0,<0.2.0"
     pip_args = ["--quiet"]
