@@ -100,6 +100,26 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
+    # secrets.{onepassword,bitwarden}.*_env config keys let a user rename
+    # the bootstrap-token env var away from the registered default (e.g.
+    # OP_SERVICE_ACCOUNT_TOKEN -> COMPANY_OP_TOKEN). The static
+    # OPTIONAL_ENV_VARS-derived block above only ever catches the default
+    # name, so without this a custom name reaches model-issued subprocess
+    # commands unprotected even though it's a high-privilege secret-manager
+    # credential. Broad except: a malformed config.yaml must never block
+    # startup, same convention as _apply_external_secret_sources().
+    try:
+        from hermes_cli.config import load_config
+        secrets_cfg = (load_config() or {}).get("secrets") or {}
+        op_token_env = (secrets_cfg.get("onepassword") or {}).get("service_account_token_env")
+        if op_token_env:
+            blocked.add(op_token_env)
+        bw_token_env = (secrets_cfg.get("bitwarden") or {}).get("access_token_env")
+        if bw_token_env:
+            blocked.add(bw_token_env)
+    except Exception:
+        pass
+
     blocked.update({
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",

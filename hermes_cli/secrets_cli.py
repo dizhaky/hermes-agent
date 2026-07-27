@@ -549,7 +549,7 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001
             console.print(f"  [red]✗ Could not install SDK: {exc}[/red]")
             console.print(
-                "  Manual install:  [cyan]pip install onepassword-sdk[/cyan]"
+                f"  Manual install:  [cyan]pip install '{op.OP_SDK_REQUIREMENT}'[/cyan]"
             )
             return 1
 
@@ -594,10 +594,16 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
     console.print()
     console.print("[bold]Step 3[/bold]  Vault name")
     vault_name = (getattr(args, "vault", None) or "").strip()
-    if not vault_name:
+    if not vault_name and sys.stdin.isatty():
         vault_name = console.input(
             "  Vault name (leave empty to search all accessible vaults): "
         ).strip()
+    elif not vault_name:
+        # Non-interactive (no TTY) and --vault wasn't given: an empty
+        # vault_name IS the documented "search all accessible vaults"
+        # value, not a missing input — prompting here would raise EOFError
+        # and abort automation that intentionally omitted --vault.
+        console.print("  (non-interactive: searching all accessible vaults)")
 
     # ------------------------------------------------------------------ item
     console.print()
@@ -739,6 +745,13 @@ def cmd_op_status(args: argparse.Namespace) -> int:
             f"\n  [red]Connection check failed: {status['connection_error']}[/red]"
         )
         return 1
+    if status["field_warnings"]:
+        console.print(
+            f"\n  [yellow]{len(status['field_warnings'])} field(s) skipped "
+            "during the connection check:[/yellow]"
+        )
+        for warn in status["field_warnings"]:
+            console.print(f"    - {warn}")
     return 0
 
 

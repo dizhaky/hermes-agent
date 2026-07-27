@@ -445,3 +445,62 @@ def test_status_checks_connection_when_enabled(monkeypatch, tmp_path):
     )
 
     assert status["connection_ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Editor/pager env vars are blocked (P1 finding — code execution via
+# `hermes config edit`'s $EDITOR/$VISUAL exec)
+# ---------------------------------------------------------------------------
+
+
+def test_editor_and_visual_are_blocked(monkeypatch):
+    assert "EDITOR" in op._DANGEROUS_ENV_VARS
+    assert "VISUAL" in op._DANGEROUS_ENV_VARS
+    assert "PAGER" in op._DANGEROUS_ENV_VARS
+
+
+def test_editor_field_is_skipped_not_injected(monkeypatch):
+    _install_fake_sdk(
+        monkeypatch,
+        vaults=[_FakeVault("v1", "Vault1")],
+        items_by_vault={"v1": [_FakeItemOverview("i1", "Hermes")]},
+        items_by_id={
+            "i1": _FakeItem([
+                _FakeField("Editor", "/bin/rm"),
+                _FakeField("API KEY", "sekret"),
+            ])
+        },
+    )
+    secrets, warnings = asyncio.run(
+        op._fetch_secrets_async(
+            token="t", vault_name="Vault1", item_title="Hermes", field_mapping={}
+        )
+    )
+    assert "EDITOR" not in secrets
+    assert secrets == {"API_KEY": "sekret"}
+
+
+# ---------------------------------------------------------------------------
+# status() surfaces skipped-field warnings, not just connection_ok (P2)
+# ---------------------------------------------------------------------------
+
+
+def test_status_surfaces_field_warnings(monkeypatch, tmp_path):
+    monkeypatch.setenv("OP_TOKEN", "tok")
+    monkeypatch.setattr(op, "_check_sdk_available", lambda: True)
+    monkeypatch.setattr(
+        op, "fetch_onepassword_secrets",
+        lambda **kw: ({"GOOD_KEY": "v"}, ["Skipping field 'bad label': ..."]),
+    )
+
+    status = op.get_onepassword_status(
+        {
+            "enabled": True,
+            "service_account_token_env": "OP_TOKEN",
+            "item": "Hermes",
+        },
+        tmp_path,
+    )
+
+    assert status["connection_ok"] is True
+    assert status["field_warnings"] == ["Skipping field 'bad label': ..."]

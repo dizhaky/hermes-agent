@@ -53,6 +53,13 @@ SDK_TIMEOUT_SECONDS = 30
 _OP_INTEGRATION_NAME = "hermes-agent"
 _OP_INTEGRATION_VERSION = "1.0.0"
 
+# Pinned pre-1.0 SDK requirement — single source of truth so every install
+# path (auto-install, the disabled-lazy-install error, the CLI's manual
+# fallback message) recommends the same bounded version rather than a bare
+# `pip install onepassword-sdk` that could pull in a breaking release
+# outside pyproject.toml/uv.lock's locked range.
+OP_SDK_REQUIREMENT = "onepassword-sdk>=0.1.0,<0.2.0"
+
 # In-process cache: (vault_name, item_title, token, field_mapping) → _CachedFetch
 # The token and field_mapping are part of the key (not hashed — this is an
 # in-memory dict key, never logged or persisted) so that a rotated service
@@ -69,6 +76,10 @@ _DANGEROUS_ENV_VARS: frozenset = frozenset({
     "BASH_ENV", "ENV", "ZDOTDIR", "SHELLOPTS", "PROMPT_COMMAND", "IFS", "PS4",
     "GIT_SSH_COMMAND", "GIT_SSH", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND", "GIT_ASKPASS",
     "SSH_ASKPASS", "GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_CONFIG",
+    # `hermes config edit` (hermes_cli/config.py) execs $EDITOR/$VISUAL
+    # directly as a command; PAGER is the same class of risk (a common
+    # convention: subprocess.run([os.environ.get("PAGER", ...), ...])).
+    "EDITOR", "VISUAL", "PAGER",
     "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
     "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
     "NODE_OPTIONS", "NODE_PATH",
@@ -132,7 +143,7 @@ def _ensure_sdk() -> None:
         raise RuntimeError(
             "The 'onepassword' Python SDK is not installed.  "
             "Run `hermes secrets onepassword install` or "
-            "`pip install onepassword-sdk` to install it."
+            f"`pip install '{OP_SDK_REQUIREMENT}'` to install it."
         )
 
 
@@ -173,10 +184,10 @@ def install_onepassword_sdk(*, force: bool = False, skip_gate: bool = False) -> 
         if not _lazy_ok:
             raise ImportError(
                 "1Password SDK auto-install is disabled (HERMES_DISABLE_LAZY_INSTALLS). "
-                "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
+                f"Install manually: pip install '{OP_SDK_REQUIREMENT}'"
             )
 
-    pkg = "onepassword-sdk>=0.1.0,<0.2.0"
+    pkg = OP_SDK_REQUIREMENT
     pip_args = ["--quiet"]
     if force:
         pip_args.append("--force-reinstall")
@@ -585,7 +596,8 @@ def apply_onepassword_secrets(
             logger.warning(
                 "1Password SDK is not installed and auto-install is disabled "
                 "(HERMES_DISABLE_LAZY_INSTALLS). "
-                "Install manually: pip install 'onepassword-sdk>=0.1.0,<0.2.0'"
+                "Install manually: pip install '%s'",
+                OP_SDK_REQUIREMENT,
             )
             return {}, []
 
@@ -687,9 +699,10 @@ def get_onepassword_status(config: dict, home_path: Path, *, check_connection: b
 
     connection_ok: Optional[bool] = None
     connection_error: Optional[str] = None
+    field_warnings: List[str] = []
     if check_connection and config.get("enabled") and sdk_available and token and item:
         try:
-            fetch_onepassword_secrets(
+            _secrets, field_warnings = fetch_onepassword_secrets(
                 token=token,
                 vault_name=vault,
                 item_title=item,
@@ -719,6 +732,12 @@ def get_onepassword_status(config: dict, home_path: Path, *, check_connection: b
         "field_mapping": config.get("field_mapping") or {},
         "connection_ok": connection_ok,
         "connection_error": connection_error,
+        # Non-fatal per-field issues from the connection check above (e.g. a
+        # field whose derived/mapped env name was invalid or blocklisted) —
+        # without this, "connection: OK" hid which credential got silently
+        # dropped, and the very status command startup pointed to for
+        # details discarded exactly the information it was supposed to show.
+        "field_warnings": field_warnings,
     }
 
 
