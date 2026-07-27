@@ -490,7 +490,14 @@ def register_op_cli(parent_parser: argparse.ArgumentParser) -> None:
     sync.add_argument(
         "--apply",
         action="store_true",
-        help="Actually export the secrets into the current process env (default: dry-run)",
+        help=(
+            "Set the secrets in THIS command's own process environment "
+            "(default: dry-run). This does NOT export into your calling "
+            "shell — a child process cannot modify its parent's "
+            "environment. Use this to verify what override_existing would "
+            "apply; secrets reach hermes/gateway processes automatically "
+            "on their next startup or hot-reload regardless of this flag."
+        ),
     )
     sync.set_defaults(func=cmd_op_sync)
 
@@ -612,6 +619,7 @@ def cmd_op_setup(args: argparse.Namespace) -> int:
             token=token,
             vault_name=vault_name,
             item_title=item_title,
+            field_mapping=secrets_cfg.get("field_mapping") or {},
             use_cache=False,
         )
     except Exception as exc:  # noqa: BLE001
@@ -690,6 +698,11 @@ def cmd_op_status(args: argparse.Namespace) -> int:
     table.add_row("Override existing",  _yn(status["override_existing"]))
     table.add_row("Cache TTL (s)",      str(status["cache_ttl_seconds"]))
     table.add_row("Auto-install SDK",   _yn(status["auto_install"]))
+    if status["connection_ok"] is not None:
+        table.add_row(
+            "Connection",
+            "[green]OK[/green]" if status["connection_ok"] else f"[red]FAILED: {status['connection_error']}[/red]",
+        )
 
     fm = status["field_mapping"]
     if fm:
@@ -715,6 +728,11 @@ def cmd_op_status(args: argparse.Namespace) -> int:
         console.print(
             "\n  [yellow]Enabled but no item configured — nothing to fetch.[/yellow]"
         )
+    if status["connection_ok"] is False:
+        console.print(
+            f"\n  [red]Connection check failed: {status['connection_error']}[/red]"
+        )
+        return 1
     return 0
 
 
@@ -780,12 +798,12 @@ def cmd_op_sync(args: argparse.Namespace) -> int:
             applied += 1
             table.add_row(
                 key,
-                "[green]exported[/green]" + (" (overrode)" if already else ""),
+                "[green]set[/green]" + (" (overrode)" if already else ""),
             )
         else:
             table.add_row(
                 key,
-                "[green]would export[/green]" + (" (overrides)" if already else ""),
+                "[green]would set[/green]" + (" (overrides)" if already else ""),
             )
 
     console.print(table)
@@ -794,12 +812,19 @@ def cmd_op_sync(args: argparse.Namespace) -> int:
 
     if not args.apply:
         console.print(
-            "\n  This was a dry-run — secrets are picked up automatically on the "
-            "next [cyan]hermes[/cyan] invocation.  Re-run with [cyan]--apply[/cyan] "
-            "to export into the current shell instead."
+            "\n  This was a dry-run — secrets are picked up automatically by "
+            "every [cyan]hermes[/cyan]/gateway process on its next startup or "
+            "hot-reload, independent of this command.  Re-run with "
+            "[cyan]--apply[/cyan] to set them in this command's own process "
+            "(useful for testing overrides; it does not affect your shell)."
         )
     else:
-        console.print(f"\n  [green]Exported {applied} secret(s) into current process.[/green]")
+        console.print(
+            f"\n  [green]Set {applied} secret(s) in this process.[/green]  "
+            "This does not export to your shell — other hermes/gateway "
+            "processes already pick these up independently on their own "
+            "next sync."
+        )
     return 0
 
 

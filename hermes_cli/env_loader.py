@@ -32,6 +32,18 @@ logger = logging.getLogger(__name__)
 # the .env case and they don't know Bitwarden is wired up).
 _SECRET_SOURCES: dict[str, str] = {}
 
+# Map of env-var name → the exact value a secret source last set it to.
+# The gateway is long-lived and calls load_hermes_dotenv() (and therefore
+# _apply_external_secret_sources()) on every turn to pick up rotated
+# credentials. Without this, a stale `_SECRET_SOURCES["X"] = "onepassword"`
+# label would survive even after an operator edits ~/.hermes/.env to
+# override X locally — the next 1Password refresh would silently clobber
+# the operator's override right back, since only the label (not whether the
+# value actually still matches what we set) was checked. Comparing against
+# this recorded value lets us detect "the value changed out from under us"
+# and treat the key as no longer managed, so a local override sticks.
+_SECRET_VALUES: dict[str, str] = {}
+
 
 def get_secret_source(env_var: str) -> str | None:
     """Return the label of the secret source that supplied ``env_var``, if any.
@@ -305,15 +317,44 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if op_cfg.get("enabled"):
         try:
             from agent.secret_sources.onepassword import apply_onepassword_secrets
+
+            # A key only counts as "still managed by 1Password" if its
+            # current value still matches what we last set it to. If an
+            # operator edited .env (loaded with override=True just above)
+            # to override a previously-injected key, the value on disk no
+            # longer matches — drop the stale label so the refresh/removal
+            # logic below leaves the operator's override alone instead of
+            # clobbering it back on the next sync.
+            stale_labels = [
+                k for k, v in _SECRET_SOURCES.items()
+                if v == "onepassword" and _SECRET_VALUES.get(k) != os.environ.get(k)
+            ]
+            for k in stale_labels:
+                del _SECRET_SOURCES[k]
+                _SECRET_VALUES.pop(k, None)
+
             previously_managed = {k for k, v in _SECRET_SOURCES.items() if v == "onepassword"}
-            op_applied = apply_onepassword_secrets(op_cfg, home_path, previously_managed=previously_managed)
+            op_applied, op_removed = apply_onepassword_secrets(
+                op_cfg, home_path, previously_managed=previously_managed
+            )
             if op_applied:
                 _sanitize_loaded_credentials()
                 for name in op_applied:
                     _SECRET_SOURCES[name] = "onepassword"
+                    _SECRET_VALUES[name] = os.environ.get(name, "")
                 print(
                     f"  1Password Secrets Manager: applied {len(op_applied)} "
                     f"secret{'s' if len(op_applied) != 1 else ''}",
+                    file=sys.stderr,
+                )
+            for name in op_removed:
+                _SECRET_SOURCES.pop(name, None)
+                _SECRET_VALUES.pop(name, None)
+            if op_removed:
+                print(
+                    f"  1Password Secrets Manager: removed {len(op_removed)} "
+                    f"secret{'s' if len(op_removed) != 1 else ''} no longer in the item "
+                    f"({', '.join(sorted(op_removed))})",
                     file=sys.stderr,
                 )
         except Exception as exc:  # noqa: BLE001
