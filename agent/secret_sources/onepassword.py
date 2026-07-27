@@ -33,6 +33,7 @@ import concurrent.futures
 import logging
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,7 +127,7 @@ def install_onepassword_sdk(*, force: bool = False) -> str:
         return _sdk_version()
 
     pkg = "onepassword-sdk>=0.1.0,<2.0.0"
-    cmd = ["pip", "install", "--quiet"]
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet"]
     if force:
         cmd.append("--force-reinstall")
     cmd.append(pkg)
@@ -259,7 +260,10 @@ async def _fetch_secrets_async(
         return {}, ["No items found in the accessible 1Password vault(s)."]
 
     # ------------------------------------------------------------------ fields
-    secrets: Dict[str, str] = {}
+    # First pass: build label → env_name mapping and label → value for all
+    # non-empty fields with valid env var names.
+    field_to_env: Dict[str, str] = {}   # field label → env var name
+    field_values: Dict[str, str] = {}   # field label → secret value
     warnings: List[str] = []
 
     for fld in target_item.fields:
@@ -281,7 +285,28 @@ async def _fetch_secrets_async(
             )
             continue
 
-        secrets[env_name] = value
+        field_to_env[label] = env_name
+        field_values[label] = value
+
+    # Detect collisions: two fields that normalize to the same env var name.
+    env_name_sources: Dict[str, str] = {}  # env_name → first field label
+    collisions: set = set()
+    for field_name, env_name in field_to_env.items():
+        if env_name in env_name_sources:
+            logger.warning(
+                "1Password field mapping collision: '%s' and '%s' both map to '%s'; skipping both",
+                env_name_sources[env_name], field_name, env_name,
+            )
+            collisions.add(env_name)
+        else:
+            env_name_sources[env_name] = field_name
+
+    # Build final secrets dict, excluding colliding env names.
+    secrets: Dict[str, str] = {
+        field_to_env[label]: value
+        for label, value in field_values.items()
+        if field_to_env[label] not in collisions
+    }
 
     return secrets, warnings
 
@@ -374,6 +399,7 @@ def fetch_onepassword_secrets(
 def apply_onepassword_secrets(
     config: dict,
     home_path: Path,
+    previously_managed: Optional[set] = None,
 ) -> Dict[str, str]:
     """Pull secrets from 1Password and inject them into ``os.environ``.
 
@@ -452,7 +478,10 @@ def apply_onepassword_secrets(
             # Never let 1Password override the token used to authenticate.
             continue
         if not override_existing and os.environ.get(key):
-            continue
+            # Always refresh keys that 1Password previously injected so that
+            # credential rotation takes effect without requiring override_existing.
+            if previously_managed is None or key not in previously_managed:
+                continue
         os.environ[key] = value
         applied[key] = "***"
 

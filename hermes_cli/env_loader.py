@@ -305,7 +305,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if op_cfg.get("enabled"):
         try:
             from agent.secret_sources.onepassword import apply_onepassword_secrets
-            op_applied = apply_onepassword_secrets(op_cfg, home_path)
+            previously_managed = {k for k, v in _SECRET_SOURCES.items() if v == "onepassword"}
+            op_applied = apply_onepassword_secrets(op_cfg, home_path, previously_managed=previously_managed)
             if op_applied:
                 _sanitize_loaded_credentials()
                 for name in op_applied:
