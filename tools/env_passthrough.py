@@ -45,9 +45,16 @@ def _get_allowed() -> set[str]:
 _config_passthrough: frozenset[str] | None = None
 
 
-def _is_hermes_provider_credential(name: str) -> bool:
-    """True if ``name`` is a Hermes-managed provider credential (API key,
-    token, or similar) per ``_HERMES_PROVIDER_ENV_BLOCKLIST``.
+def _is_hermes_provider_credential(name: str) -> str | None:
+    """Return the matching ``_HERMES_PROVIDER_ENV_BLOCKLIST`` entry if
+    ``name`` is a Hermes-managed provider credential (API key, token, or
+    similar), else ``None``.
+
+    Returning the canonical blocklist constant (not the caller-supplied
+    string) lets callers log which credential was refused without logging
+    tainted input: per CodeQL's clear-text-logging model, skill frontmatter
+    and secret-manager field names share a taint source with secret values,
+    but an element of this static set is provably non-sensitive.
 
     Skill-declared ``required_environment_variables`` frontmatter must
     not be able to override this list — that was the bypass in
@@ -63,8 +70,11 @@ def _is_hermes_provider_credential(name: str) -> bool:
     try:
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
     except Exception:
-        return False
-    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
+        return None
+    for entry in _HERMES_PROVIDER_ENV_BLOCKLIST:
+        if entry == name:
+            return entry
+    return None
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -83,21 +93,32 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     Non-Hermes third-party API keys (TENOR_API_KEY, NOTION_TOKEN, etc.)
     pass through normally — they were never in the sandbox scrub list.
     """
+    registered = 0
     for name in var_names:
         name = name.strip()
         if not name:
             continue
-        if _is_hermes_provider_credential(name):
+        blocked = _is_hermes_provider_credential(name)
+        if blocked is not None:
+            # `blocked` is the canonical constant from the static
+            # _HERMES_PROVIDER_ENV_BLOCKLIST set — never the caller-supplied
+            # `name`, which is tainted per CodeQL's clear-text-logging model
+            # (skill frontmatter / secret-manager field names share a taint
+            # source with secret values).
             logger.warning(
                 "env passthrough: refusing to register Hermes provider "
                 "credential %r (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
                 "Skills must not override the execute_code sandbox's "
                 "credential scrubbing; see GHSA-rhgp-j443-p4rf.",
-                name,
+                blocked,
             )
             continue
         _get_allowed().add(name)
-        logger.debug("env passthrough: registered %s", name)
+        registered += 1
+    if registered:
+        # Count only — registered names are caller-supplied (tainted per
+        # CodeQL's model) and must not be logged verbatim.
+        logger.debug("env passthrough: registered %d variable(s)", registered)
 
 
 def _load_config_passthrough() -> frozenset[str]:
