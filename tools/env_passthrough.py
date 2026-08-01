@@ -45,16 +45,14 @@ def _get_allowed() -> set[str]:
 _config_passthrough: frozenset[str] | None = None
 
 
-def _is_hermes_provider_credential(name: str) -> str | None:
-    """Return the matching ``_HERMES_PROVIDER_ENV_BLOCKLIST`` entry if
-    ``name`` is a Hermes-managed provider credential (API key, token, or
-    similar), else ``None``.
+def _is_hermes_provider_credential(name: str) -> bool:
+    """True if ``name`` is a Hermes-managed provider credential (API key,
+    token, or similar) per ``_HERMES_PROVIDER_ENV_BLOCKLIST``.
 
-    Returning the canonical blocklist constant (not the caller-supplied
-    string) lets callers log which credential was refused without logging
-    tainted input: per CodeQL's clear-text-logging model, skill frontmatter
-    and secret-manager field names share a taint source with secret values,
-    but an element of this static set is provably non-sensitive.
+    The return value is a bare bool on purpose: this function's name matches
+    CodeQL's sensitive-data heuristics ("credential"), so anything it returns
+    is treated as secret-tainted by the clear-text-logging query. Callers
+    must never log a value derived from it — only counts or static strings.
 
     Skill-declared ``required_environment_variables`` frontmatter must
     not be able to override this list — that was the bypass in
@@ -70,11 +68,8 @@ def _is_hermes_provider_credential(name: str) -> str | None:
     try:
         from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
     except Exception:
-        return None
-    for entry in _HERMES_PROVIDER_ENV_BLOCKLIST:
-        if entry == name:
-            return entry
-    return None
+        return False
+    return name in _HERMES_PROVIDER_ENV_BLOCKLIST
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -94,27 +89,29 @@ def register_env_passthrough(var_names: Iterable[str]) -> None:
     pass through normally — they were never in the sandbox scrub list.
     """
     registered = 0
+    refused = 0
     for name in var_names:
         name = name.strip()
         if not name:
             continue
-        blocked = _is_hermes_provider_credential(name)
-        if blocked is not None:
-            # `blocked` is the canonical constant from the static
-            # _HERMES_PROVIDER_ENV_BLOCKLIST set — never the caller-supplied
-            # `name`, which is tainted per CodeQL's clear-text-logging model
-            # (skill frontmatter / secret-manager field names share a taint
-            # source with secret values).
-            logger.warning(
-                "env passthrough: refusing to register Hermes provider "
-                "credential %r (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
-                "Skills must not override the execute_code sandbox's "
-                "credential scrubbing; see GHSA-rhgp-j443-p4rf.",
-                blocked,
-            )
+        if _is_hermes_provider_credential(name):
+            refused += 1
             continue
         _get_allowed().add(name)
         registered += 1
+    if refused:
+        # Count only, static message — never log the variable name.
+        # Per CodeQL's clear-text-logging model, skill frontmatter names
+        # share a taint source with secret values, and anything returned
+        # by _is_hermes_provider_credential is itself heuristically
+        # sensitive ("credential"), so no per-name detail is loggable.
+        logger.warning(
+            "env passthrough: refused to register %d Hermes provider "
+            "credential(s) (blocked by _HERMES_PROVIDER_ENV_BLOCKLIST). "
+            "Skills must not override the execute_code sandbox's "
+            "credential scrubbing; see GHSA-rhgp-j443-p4rf.",
+            refused,
+        )
     if registered:
         # Count only — registered names are caller-supplied (tainted per
         # CodeQL's model) and must not be logged verbatim.
@@ -137,7 +134,13 @@ def _load_config_passthrough() -> frozenset[str]:
                 if isinstance(item, str) and item.strip():
                     result.add(item.strip())
     except Exception as e:
-        logger.debug("Could not read tools.env_passthrough from config: %s", e)
+        # Exception type only — str(e) could embed config file contents
+        # (e.g. YAML parse errors quote the offending line), which may
+        # include secrets.
+        logger.debug(
+            "Could not read tools.env_passthrough from config (%s)",
+            type(e).__name__,
+        )
 
     _config_passthrough = frozenset(result)
     return _config_passthrough
