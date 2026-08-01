@@ -13,6 +13,28 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+### MCP servers for Claude Code (`.mcp.json`)
+
+`.mcp.json` is **gitignored**, same as `.env` — an MCP `env` block can hold API
+keys, and this repo ships credential-bootstrap paths, so MCP config stays
+untracked. Copy the template on each machine:
+
+```bash
+cp .mcp.json.example .mcp.json
+```
+
+- **Don't put MCP servers in `.claude/settings.json`.** Claude Code documents
+  `${VAR}` / `${VAR:-default}` expansion for `command`, `args`, `env`, `url` and
+  `headers` in **`.mcp.json`** and `~/.claude.json` — *not* in
+  `settings.json`. A `${VAR}` path there is liable to be taken literally, and the
+  server then silently fails to start. `settings.json` keeps `hooks` only.
+- The template uses `${HOME}/.local/bin/…` rather than an absolute path so it
+  resolves on any machine, not just the one it was written on.
+- **First-use approval:** project-scoped `.mcp.json` servers prompt once per
+  machine before Claude Code will use them. Expected, not a misconfiguration.
+- Hook commands are unaffected — `~` and `$CLAUDE_PROJECT_DIR` do expand in
+  `settings.json` hooks, so leave those where they are.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
@@ -360,6 +382,24 @@ Do **not** add a blanket `tests/` or `**/*.md` exemption. Test fixtures are
 exactly where a real key gets pasted by accident. Same principle as
 `supply-chain-audit.yml`: a scanner that fires on every PR trains reviewers to
 ignore it, so keep the allowlist narrow and give every entry a reason.
+
+### Catching it before it leaves your machine (optional)
+
+`.pre-commit-config.yaml` runs the same gitleaks against your **staged** diff.
+It's opt-in — nothing happens until you install the hook:
+
+```bash
+uv tool install pre-commit   # or: pipx install pre-commit
+pre-commit install
+```
+
+Worth the two commands: once a secret reaches a remote, removing it is a
+history rewrite and a rotation, not an amend. The hook reads the same
+`.gitleaks.toml`, so local and CI verdicts agree. First run builds gitleaks
+from source (the upstream hook is `language: golang`) and is then cached.
+
+CI remains the enforcement boundary — the hook is a convenience, and a
+contributor who hasn't installed it is not doing anything wrong.
 
 ---
 

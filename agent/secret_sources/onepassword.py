@@ -440,10 +440,13 @@ async def _fetch_secrets_async(
         # BASH_FUNC_x%% is how bash exports shell functions via env vars —
         # blanket-block the family rather than enumerate function names.
         if env_name in _DANGEROUS_ENV_VARS or env_name.startswith("BASH_FUNC_"):
-            logger.warning(
-                "1Password: skipping field — env var %s is in the "
-                "process-control blocklist and will not be auto-injected",
-                env_name,
+            # `label`/`env_name` are tainted per CodeQL's clear-text-logging
+            # model (derived from `fld.title`, the same source as `.value`) —
+            # route through `warnings`, which the caller only ever surfaces
+            # as a count, never logged/printed verbatim.
+            warnings.append(
+                f"Skipping field {label!r}: env var {env_name!r} is in the "
+                "process-control blocklist and will not be auto-injected"
             )
             continue
 
@@ -457,9 +460,10 @@ async def _fetch_secrets_async(
     collisions: set = set()
     for label, env_name, _value in entries:
         if env_name in env_name_sources:
-            logger.warning(
-                "1Password field mapping collision: '%s' and '%s' both map to '%s'; skipping both",
-                env_name_sources[env_name], label, env_name,
+            # Same taint-model rationale as the blocklist-skip warning above.
+            warnings.append(
+                f"Field mapping collision: {env_name_sources[env_name]!r} and "
+                f"{label!r} both map to {env_name!r}; skipping both"
             )
             collisions.add(env_name)
         else:
