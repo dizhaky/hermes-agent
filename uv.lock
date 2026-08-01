@@ -1516,7 +1516,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.15.0"
+version = "0.18.0"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },
@@ -1644,6 +1644,9 @@ messaging = [
 ]
 modal = [
     { name = "modal" },
+]
+onepassword = [
+    { name = "onepassword-sdk" },
 ]
 parallel-web = [
     { name = "parallel-web" },
@@ -1773,6 +1776,7 @@ requires-dist = [
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==1.28.1" },
     { name = "modal", marker = "extra == 'modal'", specifier = "==1.3.4" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
+    { name = "onepassword-sdk", marker = "extra == 'onepassword'", specifier = ">=0.1.0,<0.2.0" },
     { name = "openai", specifier = "==2.24.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "prompt-toolkit", specifier = "==3.0.52" },
@@ -1808,7 +1812,7 @@ requires-dist = [
     { name = "vercel", marker = "extra == 'vercel'", specifier = "==0.5.7" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "cli", "tts-premium", "voice", "pty", "honcho", "mcp", "homeassistant", "sms", "computer-use", "acp", "bedrock", "azure-identity", "onepassword", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest-timeout", specifier = ">=2.4.0,<3" }]
@@ -1900,14 +1904,14 @@ wheels = [
 
 [[package]]
 name = "httplib2"
-version = "0.31.2"
+version = "0.32.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyparsing" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c1/1f/e86365613582c027dda5ddb64e1010e57a3d53e99ab8a72093fa13d565ec/httplib2-0.31.2.tar.gz", hash = "sha256:385e0869d7397484f4eab426197a4c020b606edd43372492337c0b4010ae5d24", size = 250800, upload-time = "2026-01-23T11:04:44.165Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/f5/ccf58de92d61e3ad921119668f54ed36ca1d0cf5dcc5c1657dfb164fd78b/httplib2-0.32.0.tar.gz", hash = "sha256:48a0ef30a42db65d8f3399045e1d09ab0ba66e3b9efc360d07f80ea55d286025", size = 254283, upload-time = "2026-06-26T10:13:56.265Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/90/fd509079dfcab01102c0fdd87f3a9506894bc70afcf9e9785ef6b2b3aff6/httplib2-0.31.2-py3-none-any.whl", hash = "sha256:dbf0c2fa3862acf3c55c078ea9c0bc4481d7dc5117cae71be9514912cf9f8349", size = 91099, upload-time = "2026-01-23T11:04:42.78Z" },
+    { url = "https://files.pythonhosted.org/packages/33/a0/550eec327e5f5c7b732531c489f5307efec41f047b0d703bd4ca1e5ad2db/httplib2-0.32.0-py3-none-any.whl", hash = "sha256:dc6705cacdf3fb0a2aba7629fa33c90fd93e30035db0c157325826be177e4816", size = 93148, upload-time = "2026-06-26T10:13:54.985Z" },
 ]
 
 [[package]]
@@ -2743,6 +2747,32 @@ wheels = [
 ]
 
 [[package]]
+name = "onepassword-sdk"
+version = "0.1.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/aa/64/75462b6a21cbf98bff8ccae24848034ab280292d5b65346b77c720f46f93/onepassword_sdk-0.1.7.tar.gz", hash = "sha256:27979eb1b4fe0476a123336e3b432ce549feb4a6f87e975581497befcac985e9", size = 25312950, upload-time = "2025-02-04T15:40:38.336Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/d3/18ee2f3fe759b1d0be7ddcda7217a8c769c268609b989c40a54233dbf193/onepassword_sdk-0.1.7-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:6833123f88f900f7a22a210c37d2997efbfcf373a34083aae8755ce7e92bf681", size = 5261542, upload-time = "2025-02-04T15:39:23.095Z" },
+    { url = "https://files.pythonhosted.org/packages/34/2f/36391af7c4fea032b3757abdf2ebbf89cefb7b81ea06414447ceeef049a5/onepassword_sdk-0.1.7-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:1465c6b61579a50816682c1a7c331e1f818c378e0ed0373e4f20fcdb8f26fdab", size = 4827964, upload-time = "2025-02-04T15:39:26.001Z" },
+    { url = "https://files.pythonhosted.org/packages/54/de/b50852e313042e2910c314fafb4c7e8143cd4d6522b42703b72cef5bb581/onepassword_sdk-0.1.7-cp311-cp311-manylinux_2_32_aarch64.whl", hash = "sha256:328b2b8ffa3bd4b6b2e305e0fa9a8f193a1c9073253b6cfde00ae1ee41d90828", size = 5262840, upload-time = "2025-02-04T15:39:29.718Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/09/1753168f30308c23b68344fc1f027d913b767156973485590ebc2fc759b8/onepassword_sdk-0.1.7-cp311-cp311-manylinux_2_32_x86_64.whl", hash = "sha256:f66d1cef2dcec9f1bcf886cf342dd6aab0dfdf90963920bfd916f3a3e254d150", size = 5559126, upload-time = "2025-02-04T15:39:34.073Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/59/945623adb17e2c7e7fdf029b411fea49e566a94bc84f44bb2a8f35ccf0e7/onepassword_sdk-0.1.7-cp311-cp311-win_amd64.whl", hash = "sha256:b4ddb33096633f93cb7596da378ddf6a45111836f319404215c9d57ed47d57df", size = 4627025, upload-time = "2025-02-04T15:39:36.65Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/1a/016c165b87107cf771e3ac1f5a6b813003de534631ff78171b334980bef0/onepassword_sdk-0.1.7-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:fd399e48833f5c916831c22be40f76cf7e85d0180fcb818dbd76cc5d45659cb8", size = 5261542, upload-time = "2025-02-04T15:39:39.382Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/d9/3960534ef2faced9cdecbe72bc2060f718de97b8d95c15210f50d1c514bb/onepassword_sdk-0.1.7-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:48a6dfb85c0138896ecb8d6aa814c5985acbb4262ed5e3a18e99725454bb41d5", size = 4827963, upload-time = "2025-02-04T15:39:42.919Z" },
+    { url = "https://files.pythonhosted.org/packages/04/50/b0a34b7f1aa7e3b747bdca586896d3f2d452cdf87249f3dae56f649b1c83/onepassword_sdk-0.1.7-cp312-cp312-manylinux_2_32_aarch64.whl", hash = "sha256:7c6bbb202c83ad1566f27c3354ce88fa8dcceae0f90b0514b42d40aeb0b8ad10", size = 5262840, upload-time = "2025-02-04T15:39:47.68Z" },
+    { url = "https://files.pythonhosted.org/packages/52/2d/73a11ee89fb69d6d6e388524560e53574eb5fdd20f65d57f25212087fc9f/onepassword_sdk-0.1.7-cp312-cp312-manylinux_2_32_x86_64.whl", hash = "sha256:299cd1d33f83e0acca01f0b93474397b471e5470b7f58f542f6866f8ea4de134", size = 5559126, upload-time = "2025-02-04T15:39:51.429Z" },
+    { url = "https://files.pythonhosted.org/packages/02/fe/7aa733bfdadc930e4a02115189652524edce425ae13859d10a79f3cd24fa/onepassword_sdk-0.1.7-cp312-cp312-win_amd64.whl", hash = "sha256:c6d7ff7a15e56b2f6198b3681f6d18678fa56f6d9d3b0639bc70ae9b18b8acd2", size = 4627027, upload-time = "2025-02-04T15:39:56.654Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/97/ef38f90c2b8038529c059d5e6e1d5fb447f75300258ce2c5e5761bbe7283/onepassword_sdk-0.1.7-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:0a6c0e2b8383e2428e020abe41a82376fe24c1a1d9634bfb31c1db4692ef8a25", size = 5261540, upload-time = "2025-02-04T15:39:59.547Z" },
+    { url = "https://files.pythonhosted.org/packages/22/c2/6b9eafd9a1549bae1c7e04e344374e560842b6451279be268d1f45cada08/onepassword_sdk-0.1.7-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:6d570ebe068ba6ce4116a71d16a180353b864e5975be4574ede623b1ea794209", size = 4827963, upload-time = "2025-02-04T15:40:02.237Z" },
+    { url = "https://files.pythonhosted.org/packages/57/0e/d924f5b92176fb86ff74b432d2dd4558048c971f902f287557e89795edc0/onepassword_sdk-0.1.7-cp313-cp313-manylinux_2_32_aarch64.whl", hash = "sha256:50f332f0f0f77913abe461c4d0913f7714ba2e07d9ef39446e0d564b5b440879", size = 5262838, upload-time = "2025-02-04T15:40:05.659Z" },
+    { url = "https://files.pythonhosted.org/packages/38/13/9a79eccdb8f65b6e2676e72f0f77a2c626e00210960e74b0ff72f7a419a8/onepassword_sdk-0.1.7-cp313-cp313-manylinux_2_32_x86_64.whl", hash = "sha256:8a773da4770e887b124ec671781678e1b1fd57f20dcc40f89a610728f55138ed", size = 5559126, upload-time = "2025-02-04T15:40:08.518Z" },
+    { url = "https://files.pythonhosted.org/packages/24/2c/15549d06fa6874d520ab123963172d18c45de34d0ac26e02465a56488f7d/onepassword_sdk-0.1.7-cp313-cp313-win_amd64.whl", hash = "sha256:9541175ed6283736745bf673f8c74696e53a164192c34c44de4400e8fdf01e38", size = 4627026, upload-time = "2025-02-04T15:40:11.766Z" },
+]
+
+[[package]]
 name = "onnxruntime"
 version = "1.24.4"
 source = { registry = "https://pypi.org/simple" }
@@ -3133,11 +3163,11 @@ wheels = [
 
 [[package]]
 name = "pyasn1"
-version = "0.6.3"
+version = "0.6.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5c/5f/6583902b6f79b399c9c40674ac384fd9cd77805f9e6205075f828ef11fb2/pyasn1-0.6.3.tar.gz", hash = "sha256:697a8ecd6d98891189184ca1fa05d1bb00e2f84b5977c481452050549c8a72cf", size = 148685, upload-time = "2026-03-17T01:06:53.382Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a4/9a/23310166d960def5897e91fe20e5b724601b02a22e84ba1f94232c0b7f67/pyasn1-0.6.4.tar.gz", hash = "sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81", size = 151262, upload-time = "2026-07-09T01:12:33.988Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/a0/7d793dce3fa811fe047d6ae2431c672364b462850c6235ae306c0efd025f/pyasn1-0.6.3-py3-none-any.whl", hash = "sha256:a80184d120f0864a52a073acc6fc642847d0be408e7c7252f31390c0f4eadcde", size = 83997, upload-time = "2026-03-17T01:06:52.036Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/3b/6163796d69c3977d1e4287bea4a6979161cbbdd170ebb430511e8e1999ce/pyasn1-0.6.4-py3-none-any.whl", hash = "sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b", size = 84410, upload-time = "2026-07-09T01:12:32.92Z" },
 ]
 
 [[package]]
