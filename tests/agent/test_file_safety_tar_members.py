@@ -78,6 +78,47 @@ class TestMemberNames:
             assert_safe_tar_members(tar)
 
 
+class TestWindowsPathSemantics:
+    r"""`extractall` builds paths with `os.path`, which on Windows also splits
+    on `\` and honours drive letters. A member that looks like one opaque POSIX
+    component there is a multi-component escape at extraction time, so both
+    readings have to agree — and the guard runs the same on every host, since
+    the archive, not the host, decides what the names are.
+    """
+
+    @pytest.mark.parametrize(
+        "member_name",
+        [
+            r"..\outside.txt",
+            r"skills\..\..\outside.txt",
+            r"C:\outside.txt",
+            r"\\server\share\outside.txt",
+            r"C:outside.txt",
+        ],
+    )
+    def test_windows_style_traversal_is_rejected(self, tmp_path, member_name):
+        archive = _tar_with(tmp_path / "t.tar.gz", _file(member_name))
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError, match="refusing to extract unsafe path"):
+                assert_safe_tar_members(tar)
+
+    def test_windows_style_link_target_is_rejected(self, tmp_path):
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _link("snap/link", r"..\..\outside", hard=False)
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError, match="target escapes"):
+                assert_safe_tar_members(tar)
+
+    def test_drive_qualified_link_target_is_rejected(self, tmp_path):
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _link("snap/link", r"C:\Windows", hard=False)
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError, match="absolute target"):
+                assert_safe_tar_members(tar)
+
+
 class TestSymlinkTargets:
     """A clean *name* is not enough — the target has to be checked too."""
 

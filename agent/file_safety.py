@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -368,25 +368,56 @@ def assert_safe_tar_members(tar: "tarfile.TarFile") -> None:
     ../victim`` reads as the harmless ``a/victim`` under the link's parent, but
     ``tarfile`` links it to ``<root>/../victim`` — a file beside the extraction
     directory, which a later write through the link then overwrites.
+
+    **Paths are checked under both POSIX and Windows rules.** Tar stores names
+    with ``/`` separators, so POSIX parsing is the natural reading — but
+    ``extractall`` builds its destination with ``os.path``, which on Windows
+    also treats ``\\`` as a separator and honours drive letters. A member named
+    ``..\\outside`` or ``C:\\outside`` has no ``..`` part and no leading ``/``
+    under POSIX parsing, yet escapes when Windows joins it. Both readings must
+    agree that a path is contained. This rejects the (legal on POSIX, but
+    vanishingly rare) case of a filename that genuinely contains a backslash —
+    the conservative direction for a security guard.
     """
     import tarfile
     from posixpath import normpath as posix_normpath
 
+    def _is_absolute(value: str) -> bool:
+        """True if ``value`` is absolute under POSIX *or* Windows parsing."""
+        return (
+            value.startswith("/")
+            or PurePosixPath(value).is_absolute()
+            or PureWindowsPath(value).is_absolute()
+            or bool(PureWindowsPath(value).anchor)  # bare drive or UNC root
+        )
+
+    def _posix(value: str) -> str:
+        """Read a stored path with ``\\`` also treated as a separator.
+
+        Windows ``os.path`` does, so a member the guard parses as one opaque
+        POSIX component can still be a multi-component escape at extraction.
+        """
+        return value.replace("\\", "/")
+
     for member in tar.getmembers():
         name = member.name
-        if name.startswith("/") or ".." in PurePosixPath(name).parts:
+        if _is_absolute(name) or ".." in PurePosixPath(_posix(name)).parts:
             raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
 
         if member.issym() or member.islnk():
             target = member.linkname
-            if target.startswith("/"):
+            if _is_absolute(target):
                 raise tarfile.TarError(
                     f"refusing to extract link {name!r} -> {target!r}: absolute target"
                 )
             # Symlink: the kernel resolves it from the link's own directory.
             # Hardlink: tarfile resolves it from the extraction root.
-            base = PurePosixPath(name).parent if member.issym() else PurePosixPath(".")
-            resolved = posix_normpath(str(base / target))
+            # A target may legitimately contain "..", so containment — not the
+            # presence of ".." — is what decides here.
+            base = (
+                PurePosixPath(_posix(name)).parent if member.issym() else PurePosixPath(".")
+            )
+            resolved = posix_normpath(str(base / _posix(target)))
             if resolved == ".." or resolved.startswith("../"):
                 raise tarfile.TarError(
                     f"refusing to extract link {name!r} -> {target!r}: target escapes"
