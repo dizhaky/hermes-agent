@@ -5160,9 +5160,19 @@ def _model_flow_kimi(config, current_model=""):
 
 
 def _infer_stepfun_region(base_url: str) -> str:
-    """Infer the current StepFun region from the configured endpoint."""
+    """Infer the current StepFun region from the configured endpoint.
+
+    Matches the host exactly rather than by substring: ``api.stepfun.com`` also
+    appears inside hosts like ``api.stepfun.com.example.net``, which would infer
+    ``china`` for an unrelated endpoint.
+    """
+    from urllib.parse import urlparse
+
     normalized = (base_url or "").strip().lower()
-    if "api.stepfun.com" in normalized:
+    if "//" not in normalized:
+        normalized = f"//{normalized}"
+    host = (urlparse(normalized).hostname or "").rstrip(".")
+    if host == "api.stepfun.com":
         return "china"
     return "international"
 
@@ -8089,7 +8099,20 @@ def _install_psutil_android_compat(
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(psutil_url, archive)
         with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
+            # Same guard as agent/curator_backup.py: reject traversal members
+            # up front, then prefer the stdlib 'data' filter. A tarball is
+            # untrusted input even from a pinned URL — we do not verify the
+            # download's checksum, so a compromised or MITM'd sdist could
+            # otherwise write outside the temp dir.
+            for member in tar.getmembers():
+                name = member.name
+                if name.startswith("/") or ".." in Path(name).parts:
+                    raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+            try:
+                tar.extractall(tmp_path, filter="data")  # type: ignore[call-arg]
+            except TypeError:
+                # Python < 3.11.4 — no filter kwarg; the check above stands in.
+                tar.extractall(tmp_path)
 
         src_root = next(
             p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")
