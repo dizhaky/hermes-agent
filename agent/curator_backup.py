@@ -646,19 +646,15 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # Step 4: extract the snapshot into skills/
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Prefer the stdlib 'data' filter; fall back to the unfiltered call
-            # on interpreters that predate it (<3.11.4). The pre-check is what
-            # makes that fallback safe — and it must inspect link *targets*, not
-            # just names: a safely-named symlink pointing outside the tree lets
-            # a later member be written through it. See assert_safe_tar_members.
-            from agent.file_safety import assert_safe_tar_members
+            # Uses the stdlib 'data' filter where it exists (3.11.4+) and hand-
+            # extracts otherwise, rather than falling back to an unfiltered
+            # extractall. This matters more here than in a temp dir: the
+            # destination is the skills tree, i.e. executable content. See
+            # safe_extract_tar for why a pre-flight member check is not a
+            # substitute for the filter.
+            from agent.file_safety import safe_extract_tar
 
-            assert_safe_tar_members(tf)
-            try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
-            except TypeError:
-                # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+            safe_extract_tar(tf, skills)
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover. A partial extract can leave entries the
         # original tree never had, so drop those first, otherwise the

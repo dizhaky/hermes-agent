@@ -1,30 +1,55 @@
-"""Regression tests for ``agent.file_safety.assert_safe_tar_members``.
+"""Regression tests for ``agent.file_safety.safe_extract_tar``.
 
-The guard stands in for ``tarfile``'s ``filter="data"`` on interpreters that
-predate it. ``requires-python`` is ``>=3.11`` and the parameter landed in
-3.11.4, so 3.11.0–3.11.3 take the unfiltered ``extractall`` fallback and the
-guard is the only thing between an untrusted archive and the filesystem.
+``tarfile``'s ``filter="data"`` landed in 3.11.4 while ``requires-python`` is
+``>=3.11``, so 3.11.0–3.11.3 have no filter. This module's contract is that
+extraction is safe on those interpreters *too* — not by validating members and
+then calling an unfiltered ``extractall``, but by never calling it.
 
-Its live consumer is ``agent.curator_backup``, which extracts a snapshot into
-the **skills** directory — executable content, not a throwaway temp dir.
+The tests therefore assert the property that matters — **nothing lands outside
+the destination** — by extracting for real and looking at the filesystem,
+rather than asserting that a particular check fires. Three separate bypasses of
+the previous lexical check are pinned here as escape scenarios; each one passed
+that check while writing outside.
+
+Its live consumer is ``agent.curator_backup``, which extracts into the
+**skills** directory — executable content, not a throwaway temp dir.
 """
 
 import io
+import sys
 import tarfile
 from pathlib import Path
 
 import pytest
 
-from agent.file_safety import assert_safe_tar_members
+from agent.file_safety import safe_extract_tar
+
+# The manual path is only reachable on 3.11.0-3.11.3. Everywhere else the real
+# filter runs, so force the manual path too and assert both are safe.
+FORCE_MANUAL = [False, True]
+
+
+@pytest.fixture(params=FORCE_MANUAL, ids=["stdlib-filter", "manual-fallback"])
+def extract(request, monkeypatch):
+    """Run ``safe_extract_tar`` via the stdlib filter and via the fallback."""
+    if request.param:
+        real = tarfile.TarFile.extractall
+
+        def no_filter(self, path=".", members=None, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("extractall() got an unexpected keyword argument 'filter'")
+            return real(self, path, members, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", no_filter)
+    return safe_extract_tar
 
 
 def _tar_with(path: Path, *members: tarfile.TarInfo) -> Path:
     """Write a tarball whose members are used verbatim.
 
-    Each ``TarInfo`` is constructed by hand rather than via
-    ``gettarinfo(arcname=…)``, because that helper normalizes a leading ``/``
-    away — which would silently turn an absolute-path case into a relative one
-    and never exercise the guard's ``startswith("/")`` branch.
+    Each ``TarInfo`` is built by hand rather than via ``gettarinfo(arcname=…)``,
+    because that helper normalizes a leading ``/`` away — which would silently
+    turn an absolute-path case into a relative one.
     """
     with tarfile.open(path, "w:gz") as tar:
         for member in members:
@@ -55,36 +80,125 @@ def _link(name: str, target: str, *, hard: bool) -> tarfile.TarInfo:
     return info
 
 
-class TestMemberNames:
-    @pytest.mark.parametrize(
-        "member_name",
-        [
-            "../escaped.txt",
-            "psutil-7.2.2/../../escaped.txt",
-            "/tmp/absolute-escape.txt",
-        ],
-    )
-    def test_traversal_name_is_rejected(self, tmp_path, member_name):
-        archive = _tar_with(tmp_path / "t.tar.gz", _file(member_name))
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="refusing to extract unsafe path"):
-                assert_safe_tar_members(tar)
+def _extract_expecting_containment(extract, archive: Path, dest: Path) -> None:
+    """Extract and require containment, however the implementation achieves it.
 
-    def test_ordinary_layout_is_accepted(self, tmp_path):
+    The two paths legitimately differ in *mechanism*: the manual fallback
+    refuses an unsafe member outright, while the stdlib ``data`` filter often
+    neutralizes it instead — it strips a leading ``/``, and on POSIX a name like
+    ``..\\outside`` is one legal filename component, so it lands inside as a
+    literal file. Both satisfy the contract, which is containment, not raising.
+    Asserting the mechanism would pin an implementation detail of CPython.
+    """
+    with tarfile.open(archive) as tar:
+        try:
+            extract(tar, dest)
+        except tarfile.TarError:
+            pass
+
+
+def _nothing_outside(tmp_path: Path, dest: Path) -> None:
+    """Assert the extraction wrote nothing outside ``dest``."""
+    strays = [
+        p
+        for p in tmp_path.rglob("*")
+        if p.is_file() and dest not in p.parents and p.suffix != ".gz"
+    ]
+    assert not strays, f"content escaped the destination: {strays}"
+
+
+class TestEscapesAreBlocked:
+    """Each case is a real bypass of the lexical check this replaced."""
+
+    def test_traversal_name(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(tmp_path / "t.tar.gz", _file("../escaped.txt"))
+        _extract_expecting_containment(extract, archive, dest)
+        _nothing_outside(tmp_path, dest)
+
+    def test_absolute_name(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        # Absolute member names are expressed under tmp_path so the assertion
+        # is about this run, not about global filesystem state.
+        outside = tmp_path / "outside-abs.txt"
+        archive = _tar_with(tmp_path / "t.tar.gz", _file(str(outside)))
+        _extract_expecting_containment(extract, archive, dest)
+        assert not outside.exists()
+        _nothing_outside(tmp_path, dest)
+
+    def test_symlink_target_escapes_and_a_later_member_writes_through_it(
+        self, tmp_path, extract
+    ):
+        """Bypass #1: clean *name*, escaping *target*."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        (tmp_path / "outside").mkdir()
+        payload = b"pwned\n"
+        through = tarfile.TarInfo("snap/link/pwned.txt")
+        through.size = len(payload)
         archive = _tar_with(
-            tmp_path / "t.tar.gz", _dir("skills/demo"), _file("skills/demo/SKILL.md")
+            tmp_path / "t.tar.gz",
+            _dir("snap"),
+            _link("snap/link", "../../outside", hard=False),
+            through,
         )
         with tarfile.open(archive) as tar:
-            assert_safe_tar_members(tar)
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert not (tmp_path / "outside" / "pwned.txt").exists()
+        _nothing_outside(tmp_path, dest)
 
+    def test_hardlink_target_resolves_from_the_extraction_root(self, tmp_path, extract):
+        """Bypass #2: hardlinks resolve from the root, not the link's parent.
 
-class TestWindowsPathSemantics:
-    r"""`extractall` builds paths with `os.path`, which on Windows also splits
-    on `\` and honours drive letters. A member that looks like one opaque POSIX
-    component there is a multi-component escape at extraction time, so both
-    readings have to agree — and the guard runs the same on every host, since
-    the archive, not the host, decides what the names are.
-    """
+        ``tarfile`` sets ``tarinfo._link_target = os.path.join(path, linkname)``
+        with ``path`` the extraction root, so ``a/b/link -> ../victim`` reads as
+        the harmless ``a/victim`` under the link's parent but lands beside the
+        destination.
+        """
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        victim = tmp_path / "victim.txt"
+        victim.write_text("ORIGINAL\n")
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("a"),
+            _dir("a/b"),
+            _link("a/b/link", "../victim.txt", hard=True),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert victim.read_text() == "ORIGINAL\n"
+
+    def test_earlier_symlink_changes_what_a_later_path_means(self, tmp_path, extract):
+        """Bypass #3, the one that retired the lexical check.
+
+        With ``a -> .``, the member ``a/b/link`` has lexical depth 2 but real
+        depth 1, so ``../../outside`` normalizes as contained while resolving
+        outside. No check over member metadata can see this, because it depends
+        on what an earlier member created.
+        """
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        (tmp_path / "outside").mkdir()
+        payload = b"PWNED\n"
+        through = tarfile.TarInfo("a/b/link/pwned")
+        through.size = len(payload)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _link("a", ".", hard=False),
+            _dir("a/b"),
+            _link("a/b/link", "../../outside", hard=False),
+            through,
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert not (tmp_path / "outside" / "pwned").exists()
+        _nothing_outside(tmp_path, dest)
 
     @pytest.mark.parametrize(
         "member_name",
@@ -96,165 +210,112 @@ class TestWindowsPathSemantics:
             r"C:outside.txt",
         ],
     )
-    def test_windows_style_traversal_is_rejected(self, tmp_path, member_name):
-        archive = _tar_with(tmp_path / "t.tar.gz", _file(member_name))
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="refusing to extract unsafe path"):
-                assert_safe_tar_members(tar)
-
-    def test_windows_style_link_target_is_rejected(self, tmp_path):
-        archive = _tar_with(
-            tmp_path / "t.tar.gz", _link("snap/link", r"..\..\outside", hard=False)
-        )
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="target escapes"):
-                assert_safe_tar_members(tar)
-
-    def test_drive_qualified_link_target_is_rejected(self, tmp_path):
-        archive = _tar_with(
-            tmp_path / "t.tar.gz", _link("snap/link", r"C:\Windows", hard=False)
-        )
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="absolute target"):
-                assert_safe_tar_members(tar)
-
-
-class TestSymlinkTargets:
-    """A clean *name* is not enough — the target has to be checked too."""
-
-    def test_escaping_target_is_rejected(self, tmp_path):
-        """The gap a name-only check misses.
-
-        ``link`` has a clean name, so member-name validation passes; the
-        unfiltered fallback then writes ``link/pwned.txt`` outside the
-        destination *through* the link.
+    def test_windows_style_paths(self, tmp_path, member_name, extract):
+        r"""`os.path` on Windows splits on `\` and honours drive letters, so
+        these are escapes there while looking like one opaque POSIX component.
+        The archive decides, not the host, so they are refused everywhere.
         """
-        archive = _tar_with(
-            tmp_path / "t.tar.gz",
-            _link("snap/link", "../../outside", hard=False),
-            _file("snap/link/pwned.txt"),
-        )
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="target escapes"):
-                assert_safe_tar_members(tar)
-
-    def test_absolute_target_is_rejected(self, tmp_path):
-        archive = _tar_with(tmp_path / "t.tar.gz", _link("snap/link", "/etc", hard=False))
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="absolute target"):
-                assert_safe_tar_members(tar)
-
-    def test_internal_relative_target_is_allowed(self, tmp_path):
-        """A symlink is resolved from its own directory, so this stays inside."""
-        archive = _tar_with(
-            tmp_path / "t.tar.gz",
-            _dir("snap/sub"),
-            _file("snap/README"),
-            _link("snap/sub/link", "../README", hard=False),
-        )
-        with tarfile.open(archive) as tar:
-            assert_safe_tar_members(tar)
-
-
-class TestHardlinkTargets:
-    """Hardlinks resolve from a **different base** than symlinks.
-
-    ``tarfile`` resolves a hardlink itself, joining ``linkname`` onto the
-    extraction root (``TarFile._extract_member`` sets ``tarinfo._link_target =
-    os.path.join(path, tarinfo.linkname)``), whereas a symlink is handed to
-    ``os.symlink`` verbatim and read by the kernel relative to the link's own
-    directory. Applying symlink semantics to a hardlink under-resolves it.
-    """
-
-    def test_root_relative_escape_is_rejected(self, tmp_path):
-        """``a/b/link -> ../victim`` escapes as a hardlink but not as a symlink.
-
-        Under the link's parent it reads as the harmless ``a/victim``; under the
-        extraction root it is ``<root>/../victim`` — a file beside the
-        destination that a later write through the link overwrites.
-        """
-        archive = _tar_with(
-            tmp_path / "t.tar.gz",
-            _dir("a"),
-            _dir("a/b"),
-            _file("a/victim.txt"),
-            _link("a/b/link", "../victim.txt", hard=True),
-        )
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="target escapes"):
-                assert_safe_tar_members(tar)
-
-    def test_same_target_is_allowed_as_a_symlink(self, tmp_path):
-        """The asymmetry is the point: identical linkname, opposite verdicts."""
-        archive = _tar_with(
-            tmp_path / "t.tar.gz",
-            _dir("a"),
-            _dir("a/b"),
-            _file("a/victim.txt"),
-            _link("a/b/link", "../victim.txt", hard=False),
-        )
-        with tarfile.open(archive) as tar:
-            assert_safe_tar_members(tar)
-
-    def test_root_relative_target_inside_the_tree_is_allowed(self, tmp_path):
-        archive = _tar_with(
-            tmp_path / "t.tar.gz",
-            _dir("a"),
-            _dir("a/b"),
-            _file("a/victim.txt"),
-            _link("a/b/link", "a/victim.txt", hard=True),
-        )
-        with tarfile.open(archive) as tar:
-            assert_safe_tar_members(tar)
-
-    def test_absolute_target_is_rejected(self, tmp_path):
-        archive = _tar_with(tmp_path / "t.tar.gz", _link("a/link", "/etc/passwd", hard=True))
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="absolute target"):
-                assert_safe_tar_members(tar)
-
-    def test_extractall_would_actually_link_outside(self, tmp_path):
-        """Ground the semantics claim in observed behaviour, not documentation.
-
-        Without the guard, the unfiltered ``extractall`` this stands in for
-        hardlinks the member to a file *outside* the destination, and writing
-        through it mutates that outside file.
-        """
-        victim = tmp_path / "victim.txt"
-        victim.write_text("ORIGINAL\n")
         dest = tmp_path / "dest"
         dest.mkdir()
-
-        archive = _tar_with(
-            tmp_path / "t.tar.gz",
-            _dir("a"),
-            _dir("a/b"),
-            _link("a/b/link", "../victim.txt", hard=True),
-        )
-        with tarfile.open(archive) as tar:
-            tar.extractall(dest)
-
-        link = dest / "a" / "b" / "link"
-        assert link.stat().st_ino == victim.stat().st_ino
-        link.write_text("PWNED\n")
-        assert victim.read_text() == "PWNED\n"
-
-        # ...and the guard refuses exactly that archive.
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="target escapes"):
-                assert_safe_tar_members(tar)
-
-
-class TestSpecialMembers:
-    """``filter="data"`` refuses non-regular members; so does the guard."""
+        archive = _tar_with(tmp_path / "t.tar.gz", _file(member_name))
+        _extract_expecting_containment(extract, archive, dest)
+        _nothing_outside(tmp_path, dest)
 
     @pytest.mark.parametrize(
         "member_type", [tarfile.FIFOTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE]
     )
-    def test_device_and_fifo_members_are_rejected(self, tmp_path, member_type):
+    def test_device_and_fifo_members(self, tmp_path, member_type, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
         info = tarfile.TarInfo("snap/weird")
         info.type = member_type
         archive = _tar_with(tmp_path / "t.tar.gz", info)
         with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError, match="special member"):
-                assert_safe_tar_members(tar)
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+
+
+class TestOrdinaryArchivesStillExtract:
+    """The guard must not be safe by refusing everything."""
+
+    def test_files_and_directories_round_trip(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("skills"),
+            _dir("skills/demo"),
+            _file("skills/demo/SKILL.md", size=11),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        written = dest / "skills" / "demo" / "SKILL.md"
+        assert written.is_file()
+        assert written.read_bytes() == b"x" * 11
+
+    def test_mode_is_preserved(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = _file("skills/run.sh", size=3)
+        info.mode = 0o755
+        archive = _tar_with(tmp_path / "t.tar.gz", _dir("skills"), info)
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "skills" / "run.sh").stat().st_mode & 0o777 == 0o755
+
+    def test_a_real_archive_of_repo_content(self, tmp_path, extract):
+        """Built the way ``snapshot_skills()`` builds one, from real files."""
+        src = Path(__file__).resolve().parents[2] / "docs"
+        if not src.is_dir():
+            pytest.skip("docs/ not present")
+        archive = tmp_path / "real.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for entry in sorted(src.iterdir()):
+                tar.add(str(entry), arcname=entry.name, recursive=True)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert sum(1 for p in dest.rglob("*") if p.is_file()) > 0
+
+
+class TestManualPathIsStricterThanData:
+    """Documented divergence, asserted so it can't drift silently."""
+
+    def test_internal_symlink_allowed_by_filter_refused_by_fallback(self, tmp_path):
+        """``data`` permits a contained symlink; the fallback refuses all links.
+
+        Supporting them safely would mean resolving through links already
+        created — the complexity that produced every bypass above.
+        """
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("snap"),
+            _file("snap/README"),
+            _link("snap/link", "README", hard=False),
+        )
+
+        if sys.version_info >= (3, 11, 4):
+            dest_ok = tmp_path / "with_filter"
+            dest_ok.mkdir()
+            with tarfile.open(archive) as tar:
+                safe_extract_tar(tar, dest_ok)
+            assert (dest_ok / "snap" / "link").is_symlink()
+
+        real = tarfile.TarFile.extractall
+
+        def no_filter(self, path=".", members=None, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("no filter")
+            return real(self, path, members, **kwargs)
+
+        dest_manual = tmp_path / "manual"
+        dest_manual.mkdir()
+        original = tarfile.TarFile.extractall
+        tarfile.TarFile.extractall = no_filter  # type: ignore[method-assign]
+        try:
+            with tarfile.open(archive) as tar:
+                with pytest.raises(tarfile.TarError, match="non-regular member"):
+                    safe_extract_tar(tar, dest_manual)
+        finally:
+            tarfile.TarFile.extractall = original  # type: ignore[method-assign]

@@ -340,92 +340,108 @@ def get_read_block_error(path: str) -> Optional[str]:
     return None
 
 
-def assert_safe_tar_members(tar: "tarfile.TarFile") -> None:
-    """Reject archive members that could write outside the extraction directory.
+def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
+    """Extract ``tar`` into ``dest`` with ``data``-filter semantics everywhere.
 
-    Stands in for ``tarfile``'s ``filter="data"`` on interpreters that predate
-    it. The parameter landed in 3.11.4 while this project supports ``>=3.11``,
-    so 3.11.0–3.11.3 fall back to an unfiltered ``extractall`` and need this.
+    ``tarfile``'s ``filter="data"`` landed in 3.11.4 while this project supports
+    ``>=3.11``, so 3.11.0–3.11.3 have no filter. The obvious stopgap — validate
+    the members yourself, then call an unfiltered ``extractall`` — is what this
+    replaces, because **a lexical pre-flight check cannot be equivalent to the
+    filter.** Three rounds of review found three separate bypasses of exactly
+    such a check:
 
-    A name-only check is **not** sufficient. A member whose *name* is clean can
-    still be a link whose *target* escapes, and a later member written through
-    that link lands outside the destination:
+    1. a clean *name* on a symlink whose *target* escapes, with a later member
+       written through it;
+    2. hardlink targets, which ``tarfile`` resolves against the extraction root
+       rather than the link's parent, so symlink math under-resolves them;
+    3. and the one that settles it — an earlier symlink member changing what a
+       later member's path *means*. Given ``a -> .``, a directory ``a/b``, and
+       ``a/b/link -> ../../outside``, the link's lexical depth is 2 but its real
+       depth is 1, so the target normalizes as contained while landing outside.
+       Reproduced: the check accepted the archive and ``a/b/link/pwned`` was
+       written beside the destination.
 
-        psutil-7.2.2/link      -> ../../outside   (name is clean)
-        psutil-7.2.2/link/file                    (writes outside)
+    Containment depends on what earlier members created, which a check over
+    member metadata cannot know. So on interpreters without the filter this
+    does not call ``extractall`` at all: it writes each member itself, creating
+    only directories and regular files. Nothing that can redirect a later path
+    is ever created, which makes the traversal question moot instead of
+    answering it correctly. This mirrors ``hermes_cli.psutil_android``, which
+    ``main`` reached independently for the psutil sdist.
 
-    So link targets are resolved and required to stay inside the tree, and
-    non-regular members (devices, fifos) are refused outright — both of which
-    ``filter="data"`` also does.
+    Paths are still validated, under both POSIX and Windows rules — ``os.path``
+    on Windows also splits on ``\\`` and honours drive letters, so
+    ``..\\outside`` and ``C:\\outside`` are escapes there while looking like
+    one opaque component to ``PurePosixPath``.
 
-    **Symlinks and hardlinks resolve from different bases**, and conflating
-    them leaves a hole. A symlink is handed to ``os.symlink`` verbatim, so the
-    kernel reads its target relative to the link's own directory. A hardlink is
-    resolved by ``tarfile`` itself, which joins ``linkname`` onto the
-    *extraction root* (``TarFile._extract_member`` sets
-    ``tarinfo._link_target = os.path.join(path, tarinfo.linkname)``). Treating a
-    hardlink like a symlink therefore under-resolves it: ``a/b/link ->
-    ../victim`` reads as the harmless ``a/victim`` under the link's parent, but
-    ``tarfile`` links it to ``<root>/../victim`` — a file beside the extraction
-    directory, which a later write through the link then overwrites.
+    **Deliberately stricter than ``data`` in one respect:** ``data`` permits a
+    symlink whose target stays inside the tree, and this refuses every link
+    member. Supporting them safely means resolving through links already
+    created — the complexity that produced all three bypasses above. The
+    affected window is 3.11.0–3.11.3 only; on 3.11.4+ the real filter runs and
+    internal links are still allowed.
+    """
+    import shutil
+    import tarfile
 
-    **Paths are checked under both POSIX and Windows rules.** Tar stores names
-    with ``/`` separators, so POSIX parsing is the natural reading — but
-    ``extractall`` builds its destination with ``os.path``, which on Windows
-    also treats ``\\`` as a separator and honours drive letters. A member named
-    ``..\\outside`` or ``C:\\outside`` has no ``..`` part and no leading ``/``
-    under POSIX parsing, yet escapes when Windows joins it. Both readings must
-    agree that a path is contained. This rejects the (legal on POSIX, but
-    vanishingly rare) case of a filename that genuinely contains a backslash —
-    the conservative direction for a security guard.
+    try:
+        tar.extractall(dest, filter="data")  # type: ignore[call-arg]
+        return
+    except TypeError:
+        # Python 3.11.0-3.11.3 — no filter kwarg. Extract by hand rather than
+        # falling back to an unfiltered extractall.
+        pass
+
+    root = Path(dest)
+    for member in tar.getmembers():
+        parts = _safe_member_parts(member.name)
+        target = root.joinpath(*parts)
+
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        if not member.isfile():
+            raise tarfile.TarError(
+                f"refusing to extract non-regular member {member.name!r} "
+                f"(type {member.type!r}) without the 'data' filter"
+            )
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            raise tarfile.TarError(f"cannot read archive member {member.name!r}")
+        with extracted, open(target, "wb") as dst:
+            shutil.copyfileobj(extracted, dst)
+        try:
+            target.chmod(member.mode & 0o777)
+        except OSError:
+            pass
+
+
+def _safe_member_parts(name: str) -> tuple[str, ...]:
+    """Split a stored member name, refusing anything that escapes.
+
+    Checked under POSIX *and* Windows rules: ``extractall`` builds its
+    destination with ``os.path``, which on Windows also treats ``\\`` as a
+    separator and honours drive letters, so a name that is one opaque component
+    to ``PurePosixPath`` can be a multi-component escape there. Refusing a
+    filename that genuinely contains a backslash (legal on POSIX, vanishingly
+    rare) is the conservative direction here.
     """
     import tarfile
-    from posixpath import normpath as posix_normpath
 
-    def _is_absolute(value: str) -> bool:
-        """True if ``value`` is absolute under POSIX *or* Windows parsing."""
-        return (
-            value.startswith("/")
-            or PurePosixPath(value).is_absolute()
-            or PureWindowsPath(value).is_absolute()
-            or bool(PureWindowsPath(value).anchor)  # bare drive or UNC root
-        )
+    if (
+        name.startswith("/")
+        or PurePosixPath(name).is_absolute()
+        or PureWindowsPath(name).is_absolute()
+        or bool(PureWindowsPath(name).anchor)
+    ):
+        raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
 
-    def _posix(value: str) -> str:
-        """Read a stored path with ``\\`` also treated as a separator.
-
-        Windows ``os.path`` does, so a member the guard parses as one opaque
-        POSIX component can still be a multi-component escape at extraction.
-        """
-        return value.replace("\\", "/")
-
-    for member in tar.getmembers():
-        name = member.name
-        if _is_absolute(name) or ".." in PurePosixPath(_posix(name)).parts:
-            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
-
-        if member.issym() or member.islnk():
-            target = member.linkname
-            if _is_absolute(target):
-                raise tarfile.TarError(
-                    f"refusing to extract link {name!r} -> {target!r}: absolute target"
-                )
-            # Symlink: the kernel resolves it from the link's own directory.
-            # Hardlink: tarfile resolves it from the extraction root.
-            # A target may legitimately contain "..", so containment — not the
-            # presence of ".." — is what decides here.
-            base = (
-                PurePosixPath(_posix(name)).parent if member.issym() else PurePosixPath(".")
-            )
-            resolved = posix_normpath(str(base / _posix(target)))
-            if resolved == ".." or resolved.startswith("../"):
-                raise tarfile.TarError(
-                    f"refusing to extract link {name!r} -> {target!r}: target escapes"
-                )
-        elif not (member.isfile() or member.isdir()):
-            raise tarfile.TarError(
-                f"refusing to extract special member {name!r} (type {member.type!r})"
-            )
+    parts = tuple(p for p in PurePosixPath(name.replace("\\", "/")).parts if p not in ("", "."))
+    if ".." in parts or not parts:
+        raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+    return parts
 
 
 def raise_if_read_blocked(path: str) -> None:
