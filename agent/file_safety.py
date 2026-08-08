@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from typing import Optional
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import tarfile
 
 
 def _hermes_home_path() -> Path:
@@ -254,3 +257,48 @@ def get_read_block_error(path: str) -> Optional[str]:
         )
 
     return None
+
+
+def assert_safe_tar_members(tar: "tarfile.TarFile") -> None:
+    """Reject archive members that could write outside the extraction directory.
+
+    Stands in for ``tarfile``'s ``filter="data"`` on interpreters that predate
+    it. The parameter landed in 3.11.4 while this project supports ``>=3.11``,
+    so 3.11.0–3.11.3 fall back to an unfiltered ``extractall`` and need this.
+
+    A name-only check is **not** sufficient. A member whose *name* is clean can
+    still be a symlink whose *target* escapes, and a later member written
+    through that link lands outside the destination:
+
+        psutil-7.2.2/link      -> ../../outside   (name is clean)
+        psutil-7.2.2/link/file                    (writes outside)
+
+    So link targets are resolved relative to the link's own directory and
+    required to stay inside the tree, and non-regular members (devices, fifos)
+    are refused outright — both of which ``filter="data"`` also does.
+    """
+    import tarfile
+    from posixpath import normpath as posix_normpath
+
+    for member in tar.getmembers():
+        name = member.name
+        if name.startswith("/") or ".." in PurePosixPath(name).parts:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+
+        if member.issym() or member.islnk():
+            target = member.linkname
+            if target.startswith("/"):
+                raise tarfile.TarError(
+                    f"refusing to extract link {name!r} -> {target!r}: absolute target"
+                )
+            # Resolve the target against the link's own directory, then require
+            # it to stay within the extraction root.
+            resolved = posix_normpath(str(PurePosixPath(name).parent / target))
+            if resolved == ".." or resolved.startswith("../"):
+                raise tarfile.TarError(
+                    f"refusing to extract link {name!r} -> {target!r}: target escapes"
+                )
+        elif not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(
+                f"refusing to extract special member {name!r} (type {member.type!r})"
+            )

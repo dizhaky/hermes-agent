@@ -603,15 +603,14 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # Step 4: extract the snapshot into skills/
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Python 3.12+ supports filter='data' for safer extraction.
-            # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
-            for member in tf.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(
-                        f"refusing to extract unsafe path: {name!r}"
-                    )
+            # Prefer the stdlib 'data' filter; fall back to the unfiltered call
+            # on interpreters that predate it (<3.11.4). The pre-check is what
+            # makes that fallback safe — and it must inspect link *targets*, not
+            # just names: a safely-named symlink pointing outside the tree lets
+            # a later member be written through it. See assert_safe_tar_members.
+            from agent.file_safety import assert_safe_tar_members
+
+            assert_safe_tar_members(tf)
             try:
                 tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
             except TypeError:

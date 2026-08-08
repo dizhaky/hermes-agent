@@ -5171,7 +5171,14 @@ def _infer_stepfun_region(base_url: str) -> str:
     normalized = (base_url or "").strip().lower()
     if "//" not in normalized:
         normalized = f"//{normalized}"
-    host = (urlparse(normalized).hostname or "").rstrip(".")
+    try:
+        host = (urlparse(normalized).hostname or "").rstrip(".")
+    except ValueError:
+        # Malformed netloc (e.g. an unmatched IPv6 bracket) — this value comes
+        # straight from STEPFUN_BASE_URL / model.base_url with no prior
+        # validation, and the caller shows a region picker afterwards. Inferring
+        # a default must never abort setup, which the substring check never did.
+        return "international"
     if host == "api.stepfun.com":
         return "china"
     return "international"
@@ -8099,15 +8106,12 @@ def _install_psutil_android_compat(
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(psutil_url, archive)
         with tarfile.open(archive) as tar:
-            # Same guard as agent/curator_backup.py: reject traversal members
-            # up front, then prefer the stdlib 'data' filter. A tarball is
-            # untrusted input even from a pinned URL — we do not verify the
-            # download's checksum, so a compromised or MITM'd sdist could
-            # otherwise write outside the temp dir.
-            for member in tar.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+            # A tarball is untrusted input even from a pinned URL — we do not
+            # verify the download's checksum, so a compromised or MITM'd sdist
+            # could otherwise write outside the temp dir.
+            from agent.file_safety import assert_safe_tar_members
+
+            assert_safe_tar_members(tar)
             try:
                 tar.extractall(tmp_path, filter="data")  # type: ignore[call-arg]
             except TypeError:

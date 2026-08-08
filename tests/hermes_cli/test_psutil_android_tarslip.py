@@ -56,6 +56,75 @@ class TestPsutilSdistExtractionIsGuarded:
             with pytest.raises(tarfile.TarError, match="refusing to extract unsafe path"):
                 _install_psutil_android_compat(["pip"])
 
+    def test_symlink_with_escaping_target_is_rejected(self, tmp_path):
+        """A safely-NAMED symlink whose target escapes must still be refused.
+
+        This is the gap a name-only check misses: `link` has a clean name so
+        member-name validation passes, and the unfiltered fallback then writes
+        `link/pwned.txt` outside the destination through the link.
+        """
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        malicious = staging / "psutil.tar.gz"
+        with tarfile.open(malicious, "w:gz") as tar:
+            link = tarfile.TarInfo("psutil-7.2.2/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../../outside"
+            tar.addfile(link)
+            payload = b"escaped\n"
+            through = tarfile.TarInfo("psutil-7.2.2/link/pwned.txt")
+            through.size = len(payload)
+            tar.addfile(through, io.BytesIO(payload))
+
+        def fake_urlretrieve(url, filename):
+            Path(filename).write_bytes(malicious.read_bytes())
+            return str(filename), None
+
+        with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with pytest.raises(tarfile.TarError, match="target escapes"):
+                _install_psutil_android_compat(["pip"])
+
+    def test_absolute_symlink_target_is_rejected(self, tmp_path):
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        malicious = staging / "psutil.tar.gz"
+        with tarfile.open(malicious, "w:gz") as tar:
+            link = tarfile.TarInfo("psutil-7.2.2/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc"
+            tar.addfile(link)
+
+        def fake_urlretrieve(url, filename):
+            Path(filename).write_bytes(malicious.read_bytes())
+            return str(filename), None
+
+        with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with pytest.raises(tarfile.TarError, match="absolute target"):
+                _install_psutil_android_compat(["pip"])
+
+    def test_internal_relative_symlink_is_allowed(self, tmp_path):
+        """A relative link that stays inside the tree must not be refused."""
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        benign = staging / "psutil.tar.gz"
+        with tarfile.open(benign, "w:gz") as tar:
+            d = tarfile.TarInfo("psutil-7.2.2/sub")
+            d.type = tarfile.DIRTYPE
+            tar.addfile(d)
+            link = tarfile.TarInfo("psutil-7.2.2/sub/link")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "../README"
+            tar.addfile(link)
+
+        def fake_urlretrieve(url, filename):
+            Path(filename).write_bytes(benign.read_bytes())
+            return str(filename), None
+
+        with patch("urllib.request.urlretrieve", side_effect=fake_urlretrieve):
+            with pytest.raises(Exception) as exc:
+                _install_psutil_android_compat(["pip"])
+        assert "refusing to extract" not in str(exc.value)
+
     def test_benign_member_is_not_rejected(self, tmp_path):
         """The guard must not reject an ordinary sdist layout.
 
@@ -137,3 +206,13 @@ class TestStepFunRegionInference:
 
     def test_trailing_dot_host_is_normalized(self):
         assert _infer_stepfun_region("https://api.stepfun.com./v1") == "china"
+
+    @pytest.mark.parametrize("url", ["https://[foo", "https://[::1", "http://["])
+    def test_malformed_netloc_does_not_raise(self, url):
+        """Inference must stay total — the caller shows a picker afterwards.
+
+        `urlparse(...).hostname` raises ValueError on a malformed netloc, and
+        these values arrive unvalidated from STEPFUN_BASE_URL / model.base_url.
+        The substring implementation this replaced never raised.
+        """
+        assert _infer_stepfun_region(url) == "international"

@@ -30,7 +30,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # Pin a version we know patches cleanly. Update when a newer psutil
 # changes the marker line shape and we need to follow upstream.
@@ -42,6 +42,43 @@ PSUTIL_URL = (
 
 MARKER = 'LINUX = sys.platform.startswith("linux")'
 REPLACEMENT = 'LINUX = sys.platform.startswith(("linux", "android"))'
+
+
+def _assert_safe_tar_members(tar: tarfile.TarFile) -> None:
+    """Reject archive members that could write outside the extraction directory.
+
+    Standalone copy of ``agent.file_safety.assert_safe_tar_members`` — this
+    script runs from ``scripts/install.sh`` on a fresh checkout where the
+    package is not yet importable, so it cannot share that implementation.
+    Keep the two in sync (see the module docstring's note about the paired copy
+    in ``hermes_cli/main.py``).
+
+    A name-only check is not sufficient: a member whose name is clean can still
+    be a symlink whose target escapes, letting a later member be written
+    through it.
+    """
+    from posixpath import normpath as posix_normpath
+
+    for member in tar.getmembers():
+        name = member.name
+        if name.startswith("/") or ".." in PurePosixPath(name).parts:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+
+        if member.issym() or member.islnk():
+            target = member.linkname
+            if target.startswith("/"):
+                raise tarfile.TarError(
+                    f"refusing to extract link {name!r} -> {target!r}: absolute target"
+                )
+            resolved = posix_normpath(str(PurePosixPath(name).parent / target))
+            if resolved == ".." or resolved.startswith("../"):
+                raise tarfile.TarError(
+                    f"refusing to extract link {name!r} -> {target!r}: target escapes"
+                )
+        elif not (member.isfile() or member.isdir()):
+            raise tarfile.TarError(
+                f"refusing to extract special member {name!r} (type {member.type!r})"
+            )
 
 
 def _resolve_install_cmd(pip_arg: str | None, prefer_uv: bool) -> list[str]:
@@ -83,14 +120,9 @@ def main() -> int:
         archive = tmp_path / "psutil.tar.gz"
         urllib.request.urlretrieve(PSUTIL_URL, archive)
         with tarfile.open(archive) as tar:
-            # Keep in sync with the copy in hermes_cli/main.py (see module
-            # docstring). Reject traversal members up front, then prefer the
-            # stdlib 'data' filter — the sdist is untrusted input even from a
-            # pinned URL, since the download's checksum is not verified.
-            for member in tar.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+            # The sdist is untrusted input even from a pinned URL, since the
+            # download's checksum is not verified.
+            _assert_safe_tar_members(tar)
             try:
                 tar.extractall(tmp_path, filter="data")  # type: ignore[call-arg]
             except TypeError:
