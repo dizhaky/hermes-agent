@@ -492,43 +492,88 @@ class TestOrdinaryArchivesStillExtract:
         assert sum(1 for p in dest.rglob("*") if p.is_file()) > 0
 
 
-class TestManualPathIsStricterThanData:
-    """Documented divergence, asserted so it can't drift silently."""
+class TestContainedSymlinksRoundTrip:
+    """Both paths restore a contained symlink, and neither restores an escape.
 
-    def test_internal_symlink_allowed_by_filter_refused_by_fallback(self, tmp_path):
-        """``data`` permits a contained symlink; the fallback refuses all links.
+    The fallback used to refuse *every* link member, which was the same
+    "legitimate snapshot cannot be restored" failure as the hardlink case —
+    ``agent/skill_utils.py`` supports symlinked skills, so a snapshot of one
+    would not come back on 3.11.0–3.11.3.
 
-        Supporting them safely would mean resolving through links already
-        created — the complexity that produced every bypass above.
-        """
+    Two mechanisms make restoring them safe. The load-bearing one is that the
+    component walk refuses to traverse *any* symlink, including one this
+    extraction just created, so nothing is written through a link whenever it
+    is created. Creating links last is defence in depth on top of that —
+    checked by making creation inline, where every escape case below still
+    fails. Containment is then confirmed with ``realpath`` over the finished
+    tree, which resolves through whatever chain the archive built.
+    """
+
+    def test_contained_symlink_is_restored(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
         archive = _tar_with(
             tmp_path / "t.tar.gz",
-            _dir("snap"),
-            _file("snap/README"),
-            _link("snap/link", "README", hard=False),
+            _dir("demo"),
+            _file("demo/REAL", size=3),
+            _link("demo/README", "REAL", hard=False),
         )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        link = dest / "demo" / "README"
+        assert link.is_symlink()
+        assert link.read_bytes() == b"xxx", "link does not resolve to its target"
 
-        if sys.version_info >= (3, 11, 4):
-            dest_ok = tmp_path / "with_filter"
-            dest_ok.mkdir()
-            with tarfile.open(archive) as tar:
-                safe_extract_tar(tar, dest_ok)
-            assert (dest_ok / "snap" / "link").is_symlink()
+    def test_escaping_symlink_is_refused_and_not_left_behind(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _link("demo/bad", "../../../../etc/passwd", hard=False),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert not (dest / "demo" / "bad").is_symlink(), "failed restore left a link"
 
-        real = tarfile.TarFile.extractall
+    def test_a_link_chain_that_escapes_is_caught_by_realpath(self, tmp_path, extract):
+        """Lexically each hop is contained; only resolution shows the escape."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("a"),
+            _dir("a/b"),
+            _link("a/b/up", "../..", hard=False),
+            _link("a/b/out", "up/../../outside", hard=False),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        _nothing_outside(tmp_path, dest)
 
-        def no_filter(self, path=".", members=None, **kwargs):
-            if "filter" in kwargs:
-                raise TypeError("no filter")
-            return real(self, path, members, **kwargs)
 
-        dest_manual = tmp_path / "manual"
-        dest_manual.mkdir()
-        original = tarfile.TarFile.extractall
-        tarfile.TarFile.extractall = no_filter  # type: ignore[method-assign]
-        try:
-            with tarfile.open(archive) as tar:
-                with pytest.raises(tarfile.TarError, match="non-regular member"):
-                    safe_extract_tar(tar, dest_manual)
-        finally:
-            tarfile.TarFile.extractall = original  # type: ignore[method-assign]
+class TestMtimesMatchTheStdlib:
+    """``data`` preserves archived mtimes; the fallback must too.
+
+    ``build_skill_nodes()`` falls back to ``SKILL.md``'s mtime for skills with
+    no usage record, so a restore that stamps "now" changes behaviour rather
+    than just metadata.
+    """
+
+    def test_file_and_directory_mtimes_are_preserved(self, tmp_path, extract):
+        archived = 946684800  # 2000-01-01
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        d = _dir("skills")
+        d.mtime = archived
+        f = _file("skills/SKILL.md", size=3)
+        f.mtime = archived
+        archive = _tar_with(tmp_path / "t.tar.gz", d, f)
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert int((dest / "skills" / "SKILL.md").stat().st_mtime) == archived
+        assert int((dest / "skills").stat().st_mtime) == archived, (
+            "directory mtime was clobbered by writing its children"
+        )

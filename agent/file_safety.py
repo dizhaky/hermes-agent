@@ -401,6 +401,20 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
         pass
 
     root = Path(dest)
+    # Deferred until every regular file is written:
+    #   * symlinks — created last so they cannot interfere with extraction at
+    #     all. This is defence in depth, not the guarantee: the guarantee is
+    #     that ``_walk_dirs`` refuses to traverse *any* symlink, one this
+    #     extraction just created included, so nothing is ever written through
+    #     a link regardless of ordering. Verified by making creation inline and
+    #     confirming every escape case still fails.
+    #   * mtimes — a directory's mtime is bumped by writing its children, so it
+    #     has to be stamped afterwards. ``data`` preserves mtimes and this used
+    #     not to, which made a restored snapshot's timestamps depend on the
+    #     interpreter (``build_skill_nodes()`` falls back to SKILL.md's mtime).
+    deferred_links: list[tuple[tuple[str, ...], str]] = []
+    dir_times: list[tuple[tuple[str, ...], int]] = []
+
     # Directory modes are deliberately NOT restored, because ``filter="data"``
     # does not restore them either: a 0700 directory comes out 0755 on the
     # filtered path. Preserving them here would make the permissions of a
@@ -414,6 +428,21 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
 
         if member.isdir():
             _close(_walk_dirs(root, parts, create=True))
+            dir_times.append((parts, int(member.mtime)))
+            continue
+
+        if member.issym():
+            # Validated now, created later. The target is read by the kernel
+            # relative to the link's own directory, so it is resolved that way;
+            # containment is re-checked against the real filesystem once every
+            # link exists, which is what actually settles it.
+            target = member.linkname
+            if _is_absolute_path(target):
+                raise tarfile.TarError(
+                    f"refusing to extract symlink {member.name!r} -> {target!r}: "
+                    f"absolute target"
+                )
+            deferred_links.append((parts, target))
             continue
 
         if member.islnk():
@@ -439,7 +468,22 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
         if extracted is None:
             raise tarfile.TarError(f"cannot read archive member {member.name!r}")
         with extracted:
-            _write_file(root, parts, extracted, _data_filter_mode(member.mode))
+            _write_file(
+                root, parts, extracted, _data_filter_mode(member.mode), int(member.mtime)
+            )
+
+    _create_symlinks(root, deferred_links)
+
+    # Deepest first: stamping a parent before its children would be undone by
+    # writing them.
+    for parts, mtime in sorted(dir_times, key=lambda item: len(item[0]), reverse=True):
+        fd = _walk_dirs(root, parts, create=False)
+        try:
+            os.utime(fd, (mtime, mtime))
+        except OSError:
+            pass
+        finally:
+            _close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +566,7 @@ def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> int:
 
 
 def _write_file(
-    root: "Path", parts: "tuple[str, ...]", source, mode: int
+    root: "Path", parts: "tuple[str, ...]", source, mode: int, mtime: "int | None" = None
 ) -> None:
     """Write ``source`` to ``parts`` under ``root`` without following links."""
     parent = _walk_dirs(root, parts[:-1], create=True)
@@ -536,6 +580,11 @@ def _write_file(
             os.chmod(name, mode, dir_fd=parent, follow_symlinks=False)
         except (OSError, NotImplementedError):
             pass
+        if mtime is not None:
+            try:
+                os.utime(name, (mtime, mtime), dir_fd=parent, follow_symlinks=False)
+            except (OSError, NotImplementedError):
+                pass
     finally:
         _close(parent)
 
@@ -561,6 +610,69 @@ def _copy_within(
 
     with handle:
         _write_file(root, dst_parts, handle, _data_filter_mode(member.mode))
+
+
+def _is_absolute_path(value: str) -> bool:
+    """True if ``value`` is absolute under POSIX *or* Windows parsing."""
+    return (
+        value.startswith("/")
+        or PurePosixPath(value).is_absolute()
+        or PureWindowsPath(value).is_absolute()
+        or bool(PureWindowsPath(value).anchor)
+    )
+
+
+def _create_symlinks(root: "Path", links: "list[tuple[tuple[str, ...], str]]") -> None:
+    """Create validated symlinks, then prove none of them escapes.
+
+    Two things make this safe, and it is worth being precise about which does
+    the work. The guarantee is that ``_walk_dirs`` refuses to traverse any
+    symlink — including one this extraction just created — so no member is ever
+    written *through* a link. Creating links last is defence in depth on top of
+    that: with inline creation every escape case here still fails, which was
+    checked rather than assumed.
+
+    Containment is then checked with ``realpath`` against the finished tree
+    rather than lexically. That is the check that actually holds: it resolves
+    through any link chain the archive just created, which no amount of string
+    math over member names can do. A link that escapes is removed and the
+    extraction fails, so a failed restore never leaves one behind.
+    """
+    import tarfile
+
+    if not links:
+        return
+
+    root_real = os.path.realpath(root)
+    created: list[str] = []
+    try:
+        for parts, target in links:
+            parent = _walk_dirs(root, parts[:-1], create=True)
+            try:
+                os.symlink(target, parts[-1], dir_fd=parent)
+            except OSError as exc:
+                raise tarfile.TarError(
+                    f"cannot create symlink {'/'.join(parts)!r} -> {target!r}: "
+                    f"{exc.strerror}"
+                ) from exc
+            finally:
+                _close(parent)
+            created.append(os.path.join(root_real, *parts))
+
+        for path in created:
+            resolved = os.path.realpath(path)
+            if resolved != root_real and not resolved.startswith(root_real + os.sep):
+                raise tarfile.TarError(
+                    f"refusing to extract symlink {os.path.relpath(path, root_real)!r}: "
+                    f"it resolves outside the destination"
+                )
+    except BaseException:
+        for path in created:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
 
 
 def _data_filter_mode(mode: int) -> int:
@@ -595,12 +707,7 @@ def _safe_member_parts(name: str) -> tuple[str, ...]:
     """
     import tarfile
 
-    if (
-        name.startswith("/")
-        or PurePosixPath(name).is_absolute()
-        or PureWindowsPath(name).is_absolute()
-        or bool(PureWindowsPath(name).anchor)
-    ):
+    if _is_absolute_path(name):
         raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
 
     parts = tuple(p for p in PurePosixPath(name.replace("\\", "/")).parts if p not in ("", "."))
