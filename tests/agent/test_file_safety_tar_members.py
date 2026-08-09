@@ -1013,3 +1013,75 @@ def test_an_embedded_nul_in_a_long_path_is_refused(tmp_path, extract):
         assert "\x00" in tar.getmembers()[0].name  # the premise
         with pytest.raises(tarfile.TarError):
             extract(tar, dest)
+
+
+class TestNormalizationIsAppliedUniformly:
+    """Three rounds running found the same defect: a rule applied in one check
+    and not in the one beside it. These pin the rules the last two rounds added
+    against the member kinds and spellings that had slipped past them.
+    """
+
+    def _hazard(self, tmp_path):
+        outside = tmp_path / "important.txt"
+        outside.write_text("USER DATA\n")
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        os.link(outside, dest / ".hub" / "x")
+        return outside, dest
+
+    def test_a_directory_under_a_symlink_member(self, tmp_path, extract):
+        """`a -> .hub` then directory `a/injected` — the third member kind to
+        short-circuit past a check that was never type-specific."""
+        outside, dest = self._hazard(tmp_path)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _link("a", ".hub", hard=False), _dir("a/injected")
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert not (dest / ".hub" / "injected").exists()
+
+    def test_a_case_differing_symlink_ancestor(self, tmp_path, extract):
+        """`A -> .hub` then `a/x`: the same filesystem entry where case is
+        insensitive, but `('A',)` is not a prefix of `('a','x')`."""
+        outside, dest = self._hazard(tmp_path)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _link("A", ".hub", hard=False), _file("a/x", size=5)
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_a_nul_in_a_symlink_target(self, tmp_path, extract):
+        """`os.symlink` raises ValueError, which escapes rollback's recovery."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = _link("demo/l", "inside", hard=False)
+        info.pax_headers = {"linkpath": "inside\x00evil"}
+        archive = tmp_path / "t.tar.gz"
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+            tar.addfile(info)
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+
+    def test_identity_still_uses_the_host_semantics(self, tmp_path, extract):
+        """The control that caught this being over-applied.
+
+        Refusal rules consider every reading, because over-refusing is cheap.
+        *Identity* rules must not: judging duplicates across both separator
+        readings made `demo/a\\b` and `demo/a/b` collide, and on POSIX those are
+        two legitimate, different files.
+        """
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _file("demo/a\\b", size=2),
+            _dir("demo/a"),
+            _file("demo/a/b", size=3),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)

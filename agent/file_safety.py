@@ -727,18 +727,55 @@ def _top_level_names(name: str) -> "set[str]":
     return names
 
 
+def _canonical_readings(name: str) -> "tuple[tuple[str, ...], ...]":
+    """Every component tuple this member could resolve to, casefolded.
+
+    One place, used for every comparison the validator makes. Three rounds in a
+    row found the same defect — a normalization rule applied in one check and
+    not in the one beside it. Both separators, because ``tarfile`` splits on
+    ``\\`` where the host does; casefolded, because Windows and default macOS
+    resolve ``.HUB`` onto an existing ``.hub``. Comparing anything by hand
+    against ``member.name`` is how the last three bypasses got in.
+    """
+    readings: set[tuple[str, ...]] = set()
+    for reading in (name, name.replace("\\", "/")):
+        parts = _filter_destination_parts(reading)
+        if parts is not None:
+            readings.add(tuple(part.casefold() for part in parts))
+    return tuple(readings)
+
+
+def _host_identity(name: str) -> "tuple[str, ...] | None":
+    """Where this member actually lands *here*, as an identity key.
+
+    Distinct from :func:`_canonical_readings`, and the distinction matters:
+
+    * **Refusal** rules ask "could this reach somewhere forbidden?" — so they
+      consider every reading, because over-refusing costs nothing.
+    * **Identity** rules ask "are these two members the same file?" — so they
+      must use the host's real semantics. Judging identity across both readings
+      made ``demo/a\\b`` and ``demo/a/b`` collide, and on POSIX those are two
+      legitimate, different files.
+
+    ``normcase`` is the right primitive for the case half for the same reason:
+    it lowercases on Windows and is the identity on POSIX.
+    """
+    reading = name.replace("\\", "/") if os.sep == "\\" or os.altsep == "\\" else name
+    parts = _filter_destination_parts(reading)
+    if parts is None:
+        return None
+    return tuple(os.path.normcase(part) for part in parts)
+
+
 def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]") -> None:
     """Reject an archive the destination cannot safely receive.
 
     Everything here is decided from the **members alone**. That boundary is the
     point. Round six established that a pass over member metadata cannot know
     where a member will land, because an earlier member changes what a later
-    path means — and the previous version of this function ignored that and
-    tried to inspect the destination anyway. It produced a P1 in six
-    consecutive review rounds: a preserved hardlink truncated in place, a
-    Windows junction walked through and unlinked, a symlink member redirecting
-    a later member, a contained symlink already in the tree doing the same.
-    Each fix closed an instance; the class survived every time.
+    path means — and an earlier version of this function ignored that and tried
+    to inspect the destination anyway, producing a P1 in six consecutive review
+    rounds.
 
     What closes the class is ``refuse_top_level``. ``curator_backup`` excludes
     ``.hub`` and ``.curator_backups`` from every snapshot it writes, and
@@ -747,92 +784,99 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
     never contains a member under either. Refusing such members means
     extraction only ever writes to paths that do not exist yet. An empty
     destination cannot carry a hardlink, a junction or a symlink, so there is
-    nothing left to detach and no evolving tree to predict.
+    nothing to detach and no evolving tree to predict.
+
+    **No member type short-circuits.** Directories skipped these checks three
+    separate times — timestamps, preserved names, then symlink ancestry — each
+    time because a ``continue`` sat ahead of a check that was never
+    type-specific. Every rule below applies to every member.
     """
     import tarfile
 
+    folded_refused = {n.casefold() for n in refuse_top_level}
     seen_regular: set[tuple[str, ...]] = set()
     symlinked: set[tuple[str, ...]] = set()
     claimed: set[tuple[str, ...]] = set()
+
     for member in tar.getmembers():
-        parts = _filter_destination_parts(member.name)
-        folded_refused = {n.casefold() for n in refuse_top_level}
-        if parts is not None and folded_refused & _top_level_names(member.name):
-            # Checked before the directory short-circuit below. A *directory*
-            # member named `.hub/injected` skipped every check here and was
-            # created inside the preserved tree, with rollback reporting
-            # success — mutating hub-managed state it is supposed to leave
-            # alone.
+        readings = _canonical_readings(member.name)
+        if not readings:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+
+        if folded_refused & {reading[0] for reading in readings}:
             raise tarfile.TarError(
                 f"refusing to extract {member.name!r}: it names a directory that "
                 f"is preserved across a restore and never part of a snapshot"
             )
+
         if not _representable_mtime(member.mtime):
-            # Checked before the directory short-circuit below. `data` applies
-            # directory attributes *after* the members, so an out-of-range
-            # mtime on a directory escaped as OverflowError from the very end
-            # of extractall — past every other check, and not a TarError, so
-            # `rollback()` skipped recovery with the tree already staged.
+            # `os.utime` raises OverflowError on an out-of-range PAX mtime, and
+            # `data` applies directory attributes at the very end — neither is
+            # a TarError, so `rollback()` skipped recovery with the tree staged.
             raise tarfile.TarError(
                 f"refusing to extract {member.name!r}: timestamp {member.mtime!r} "
                 f"is out of range"
             )
-        if member.isdir():
-            continue
-        if not (member.isfile() or member.islnk() or member.issym()):
-            raise tarfile.TarError(
-                f"refusing to extract non-regular member {member.name!r} "
-                f"(type {member.type!r})"
-            )
-        if parts is None:
-            raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
-        if parts in claimed:
-            # A name written twice invalidates anything already concluded about
-            # it. Regular `a`, then a symlink also named `a`, then hardlink
-            # `b -> a`: `a` was a regular file when the hardlink was checked and
-            # a symlink by the time it was used. Rather than track provenance
-            # through replacement, duplicates are refused — `tarfile.add()`
-            # walks a tree once, so a real snapshot never contains one.
-            raise tarfile.TarError(
-                f"refusing to extract {member.name!r}: the archive writes this "
-                f"path more than once"
-            )
-        claimed.add(parts)
-        readings = {parts}
-        win = _filter_destination_parts(member.name.replace("\\", "/"))
-        if win is not None:
-            readings.add(win)
+
         if any(
             reading[: len(sym)] == sym for reading in readings for sym in symlinked
         ):
-            # A symlink member changes what a later member's path means. Safe
-            # to refuse: tar does not archive content underneath a symlink, so
+            # An earlier symlink member changes what this path means. Safe to
+            # refuse: tar does not archive content underneath a symlink, so
             # `snapshot_skills()` never emits members below a symlink member.
             raise tarfile.TarError(
                 f"refusing to extract {member.name!r}: it resolves through an "
                 f"earlier symlink member"
             )
+
+        if member.isdir():
+            continue
+
+        if not (member.isfile() or member.islnk() or member.issym()):
+            raise tarfile.TarError(
+                f"refusing to extract non-regular member {member.name!r} "
+                f"(type {member.type!r})"
+            )
+
+        identity = _host_identity(member.name)
+        if identity is None:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+        if identity in claimed:
+            # A name written twice invalidates anything already concluded about
+            # it — regular `a`, then a symlink also named `a`, then a hardlink
+            # to `a`. `tarfile.add()` walks a tree once, so a real snapshot
+            # never contains a duplicate.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: the archive writes this "
+                f"path more than once"
+            )
+        claimed.add(identity)
+
+        if (member.islnk() or member.issym()) and "\x00" in member.linkname:
+            # Same failure mode as a NUL in the member name, on the target
+            # instead: `os.symlink` raises ValueError, which is neither OSError
+            # nor TarError, so it escapes `rollback()`'s recovery.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: its link target contains "
+                f"a NUL byte"
+            )
+
         if member.islnk():
             # The source must be an earlier *regular file* member. "Earlier
-            # member" alone was not enough: `a -> .hub/x` (symlink), `b -> a`
-            # (hardlink), then a regular `b` made `b` a symlink alias that the
-            # final member followed. `tarfile.add()` only emits LNKTYPE for a
-            # regular inode it already archived, so requiring that cannot
-            # reject a real snapshot.
-            src = _filter_destination_parts(member.linkname)
+            # member" alone was not enough: a symlink alias could stand in for
+            # it. `tarfile.add()` only emits LNKTYPE for a regular inode it
+            # already archived, so this cannot reject a real snapshot.
+            src = _host_identity(member.linkname)
             if src is None or src not in seen_regular:
                 raise tarfile.TarError(
                     f"refusing hardlink {member.name!r} -> {member.linkname!r}: "
                     f"target is not an earlier regular-file member"
                 )
+
         if member.issym():
-            # Both readings, because `tarfile` splits on `\\` when the host
-            # does: `a\\link -> ..\\.hub` then `a\\link\\x` recorded the symlink as
-            # the single component `a\link`, which is not a prefix of the
-            # single component `a\link\x`, so the redirect was not seen.
             symlinked.update(readings)
         else:
-            seen_regular.update(readings)
+            seen_regular.add(identity)
 
 
 def _copy_within(
