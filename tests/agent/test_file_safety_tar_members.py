@@ -302,9 +302,15 @@ class TestDestinationStateCannotRedirect:
         )
         assert outside.read_text() == "USER DATA\n"
 
-    @pytest.mark.parametrize("spelling", [".hub/x", "/.hub/x", "./.hub/x"])
+    @pytest.mark.parametrize("spelling", [".hub/x", "/.hub/x", "./.hub/x", ".hub\\x"])
     def test_the_refusal_is_not_defeated_by_spelling(self, tmp_path, extract, spelling):
-        """``data`` strips a leading slash, so the check normalizes first."""
+        """The refusal must not depend on how the member spells its path.
+
+        ``data`` strips a leading slash, and ``tarfile`` builds its destination
+        with ``os.path`` — so on Windows ``.hub\\x`` is two components while
+        ``PurePosixPath`` sees one opaque name. Reading it only the POSIX way
+        let that spelling walk past the preserved-name refusal.
+        """
         outside, dest = self._hazard_setup(tmp_path)
         os.link(outside, dest / ".hub" / "x")
         self._extract(extract, _tar_with(tmp_path / "t.tar.gz", _file(spelling, size=5)), dest)
@@ -856,3 +862,25 @@ class TestOutOfRangeTimestamps:
         with tarfile.open(archive) as tar:
             extract(tar, dest)
         assert (dest / "skills" / "a.txt").stat().st_mtime == 946684800
+
+
+def test_a_directory_timestamp_is_validated_too(tmp_path, extract):
+    """`data` applies directory attributes last, so this escaped every check.
+
+    The validator short-circuited on directory members before reaching the
+    range check, and `extractall` then raised `OverflowError` from the very
+    end of extraction — not a `TarError`, so `rollback()` skipped recovery
+    with the tree already staged.
+    """
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    directory = _dir("skills")
+    directory.mtime = 1e300
+    info = _file("skills/a.txt", size=1)
+    archive = tmp_path / "t.tar.gz"
+    with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        tar.addfile(directory)
+        tar.addfile(info, io.BytesIO(b"x"))
+    with tarfile.open(archive) as tar:
+        with pytest.raises(tarfile.TarError):
+            extract(tar, dest)

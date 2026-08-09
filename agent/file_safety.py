@@ -697,6 +697,24 @@ def _filter_destination_parts(name: str) -> "tuple[str, ...] | None":
     return parts
 
 
+def _top_level_names(name: str) -> "set[str]":
+    """Every first component this member could have, under either separator.
+
+    ``tarfile`` builds its destination with ``os.path``, so on Windows a member
+    spelled ``.hub\\x`` is two components while ``PurePosixPath`` sees one
+    opaque name. Reading it only the POSIX way let that spelling walk straight
+    past the preserved-name refusal and extract into ``.hub`` after all. Both
+    readings are checked, so the refusal does not depend on which platform is
+    doing the extracting.
+    """
+    names: set[str] = set()
+    for reading in (name, name.replace("\\", "/")):
+        parts = _filter_destination_parts(reading)
+        if parts:
+            names.add(parts[0])
+    return names
+
+
 def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]") -> None:
     """Reject an archive the destination cannot safely receive.
 
@@ -725,6 +743,16 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
     symlinked: set[tuple[str, ...]] = set()
     for member in tar.getmembers():
         parts = _filter_destination_parts(member.name)
+        if not _representable_mtime(member.mtime):
+            # Checked before the directory short-circuit below. `data` applies
+            # directory attributes *after* the members, so an out-of-range
+            # mtime on a directory escaped as OverflowError from the very end
+            # of extractall — past every other check, and not a TarError, so
+            # `rollback()` skipped recovery with the tree already staged.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: timestamp {member.mtime!r} "
+                f"is out of range"
+            )
         if member.isdir():
             continue
         if not (member.isfile() or member.islnk() or member.issym()):
@@ -734,19 +762,10 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
             )
         if parts is None:
             raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
-        if parts[0] in refuse_top_level:
+        if refuse_top_level & _top_level_names(member.name):
             raise tarfile.TarError(
-                f"refusing to extract {member.name!r}: {parts[0]!r} is preserved "
-                f"across a restore and is never part of a snapshot"
-            )
-        if not _representable_mtime(member.mtime):
-            # `os.utime` raises OverflowError on an out-of-range PAX mtime and
-            # `extractall` lets it through — not a TarError, so `rollback()`
-            # skips its extraction-failure recovery. Rejecting here makes the
-            # failure recoverable, before anything is written.
-            raise tarfile.TarError(
-                f"refusing to extract {member.name!r}: timestamp {member.mtime!r} "
-                f"is out of range"
+                f"refusing to extract {member.name!r}: it names a directory that "
+                f"is preserved across a restore and never part of a snapshot"
             )
         if any(parts[: len(sym)] == sym for sym in symlinked):
             # A symlink member changes what a later member's path means. Safe
