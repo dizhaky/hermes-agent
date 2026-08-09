@@ -34,6 +34,15 @@ leaves the key unchanged, so plain membership would exempt both copies and
 report nothing new. Only as many occurrences as existed at the base are
 exempt.
 
+Several base-side reports, unioned by location
+----------------------------------------------
+The caller passes more than one base-side report: the target tip, the deleted
+files it could not put in the same tree, and the branch's previous head. Those
+are not independent tallies. Location is *not* part of the head-vs-base key —
+a secret that merely moved was not introduced — but it is exactly what
+distinguishes one occurrence from another *between parents*, so the reports
+are unioned over ``(rule, secret, file, line)`` before being counted.
+
 Secrets are never printed. Only the path, line and rule of a new finding are
 reported; the reports themselves stay in the caller's temp dirs.
 """
@@ -78,47 +87,52 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("head", type=Path, help="gitleaks JSON for HEAD")
     parser.add_argument(
         "--extra-base",
-        type=Path,
-        action="append",
-        default=[],
-        metavar="REPORT",
-        help=(
-            "another slice of the SAME base snapshot, covering paths the main "
-            "report could not. Counts add, because the slices are disjoint: "
-            "deleted files are scanned into their own tree only because a file "
-            "and a directory cannot share a name."
-        ),
-    )
-    parser.add_argument(
         "--alt-base",
         type=Path,
         action="append",
         default=[],
+        dest="extra_base",
         metavar="REPORT",
         help=(
-            "an ALTERNATIVE base snapshot of the same paths — the branch's "
-            "previous head alongside the target's tip. Counts are combined by "
-            "maximum, not by sum: the snapshots overlap, so adding them would "
-            "exempt two copies of a credential that each parent holds once, "
-            "and a merge resolution that duplicates it would pass."
+            "another base-side report: the deleted-file tree, or the branch's "
+            "previous head. All base-side reports are combined as a union over "
+            "(rule, secret, file, line) — see the module docstring for why "
+            "neither summing nor maximum is right."
         ),
     )
     args = parser.parse_args(argv)
 
-    base = load(args.base)
-    for extra in args.extra_base:
-        base.extend(load(extra))
+    reports = [load(args.base)] + [load(extra) for extra in args.extra_base]
     head = load(args.head)
 
-    # Within a snapshot, occurrences add. Across snapshots they do not: each is
-    # a complete account of the same paths at a different revision, so what is
-    # exempt is the most any single parent actually held.
-    remaining = Counter(key(f) for f in base)
-    for alt in args.alt_base:
-        counts = Counter(key(f) for f in load(alt))
-        for k, n in counts.items():
-            if n > remaining[k]:
-                remaining[k] = n
+    # Union over (rule, secret, file, line) across every base-side report, then
+    # reduce to value counts. Both simpler merges are wrong, in opposite
+    # directions, and this PR shipped each of them in turn:
+    #
+    #   summing   — the target tip and the previous branch head describe the
+    #               same paths, so a value both hold once was exempted twice,
+    #               and a merge resolution adding a second copy passed.
+    #   maximum   — but when the two parents hold that value at *different*
+    #               paths, HEAD legitimately inherits both, and taking the
+    #               larger single count reported the second as introduced.
+    #
+    # Deduplicating by location does both jobs: the same occurrence seen in two
+    # parents collapses, while genuinely distinct occurrences survive.
+    # Per report, count occurrences at each location; across reports keep the
+    # largest count seen for that location. Two findings at the *same* location
+    # in one report are two occurrences and must both stay exempt, so the merge
+    # cannot be a plain set union either.
+    merged: Counter = Counter()
+    for report in reports:
+        for spot, n in Counter(
+            (key(f), str(f.get("File", "")), f.get("StartLine")) for f in report
+        ).items():
+            if n > merged[spot]:
+                merged[spot] = n
+
+    remaining: Counter = Counter()
+    for (k, _file, _line), n in merged.items():
+        remaining[k] += n
     exempt = sum(remaining.values())
 
     new = []

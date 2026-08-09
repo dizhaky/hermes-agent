@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import stat
@@ -420,6 +421,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     #     interpreter (``build_skill_nodes()`` falls back to SKILL.md's mtime).
     deferred_links: list[tuple[tuple[str, ...], str]] = []
     dir_times: list[tuple[tuple[str, ...], float]] = []
+    written: set[tuple[str, ...]] = set()
 
     # Directory modes are deliberately NOT restored, because ``filter="data"``
     # does not restore them either: a 0700 directory comes out 0755 on the
@@ -452,6 +454,18 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
             continue
 
         if member.islnk():
+            # The source must be something this archive already wrote. Resolving
+            # `linkname` against the extraction root and copying whatever is
+            # there let a crafted snapshot name a *preserved* file instead —
+            # `.hub/secret.txt` — and pull it into the restored tree (the
+            # stdlib path goes further and creates a real hardlink, so later
+            # writes through the restored name mutate state rollback
+            # deliberately excludes). Verified: `stolen.txt` came back holding
+            # the hub's content on both paths.
+            #
+            # This cannot reject a legitimate snapshot: `tarfile.add()` only
+            # emits LNKTYPE for an inode it has *already* archived, so the
+            # target is always an earlier member.
             # tarfile.add() stores the second occurrence of a hardlinked inode
             # as a LNKTYPE member, so an ordinary snapshot of a skills tree
             # containing hardlinks has them — refusing outright would make the
@@ -461,7 +475,13 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
             # Hardlink targets are root-relative (tarfile joins linkname onto
             # the extraction root), so they validate the same way names do.
             src_parts = _safe_member_parts(member.linkname)
+            if src_parts not in written:
+                raise tarfile.TarError(
+                    f"refusing hardlink {member.name!r} -> {member.linkname!r}: "
+                    f"target is not an earlier member of this archive"
+                )
             _copy_within(root, src_parts, parts, member)
+            written.add(parts)
             continue
 
         if not member.isfile():
@@ -477,6 +497,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
             _write_file(
                 root, parts, extracted, _data_filter_mode(member.mode), member.mtime
             )
+        written.add(parts)
 
     _create_symlinks(root, deferred_links)
 
@@ -486,7 +507,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
         fd = _walk_dirs(root, parts, create=False)
         try:
             os.utime(fd, (mtime, mtime))
-        except OSError:
+        except (OSError, OverflowError, ValueError):
             pass
         finally:
             _close(fd)
@@ -621,10 +642,29 @@ def _write_file(
         if mtime is not None:
             try:
                 os.utime(name, (mtime, mtime), dir_fd=parent, follow_symlinks=False)
-            except (OSError, NotImplementedError):
+            except (OSError, NotImplementedError, OverflowError, ValueError):
+                # OverflowError is the one that mattered: a PAX member with an
+                # out-of-range mtime (1e300) raised it straight out of
+                # safe_extract_tar, and because it is not a TarError,
+                # rollback() skipped its extraction-failure recovery — leaving
+                # the partial tree visible and the original staged. A timestamp
+                # is metadata; it must never be able to abort a restore.
                 pass
     finally:
         _close(parent)
+
+
+def _representable_mtime(mtime: float) -> bool:
+    """True if ``os.utime`` can plausibly store this timestamp.
+
+    The bound is deliberately loose — far beyond any real file time, far below
+    where the float loses integer precision. It exists to catch a crafted or
+    corrupt value such as ``1e300``, not to police plausible dates.
+    """
+    try:
+        return math.isfinite(mtime) and abs(mtime) <= 2**53
+    except TypeError:
+        return False
 
 
 def _filter_destination_parts(name: str) -> "tuple[str, ...] | None":
@@ -696,28 +736,72 @@ def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
     """
     import tarfile
 
-    if not _HAVE_DIR_FD:
-        return
-
     targets: list[tuple[str, ...]] = []
+    seen: set[tuple[str, ...]] = set()
     for member in tar.getmembers():
+        parts = _filter_destination_parts(member.name)
         if member.isdir():
+            if parts is not None:
+                seen.add(parts)
             continue
         if not (member.isfile() or member.islnk() or member.issym()):
             raise tarfile.TarError(
                 f"refusing to extract non-regular member {member.name!r} "
                 f"(type {member.type!r})"
             )
-        parts = _filter_destination_parts(member.name)
         if parts is None:
             raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+        if not _representable_mtime(member.mtime):
+            # `os.utime` raises OverflowError on an out-of-range PAX mtime, and
+            # `extractall` lets it straight through — it is not a TarError, so
+            # `rollback()` skips its extraction-failure recovery and leaves the
+            # partial tree visible with the original still staged. Raising here
+            # makes the failure recoverable. The fallback additionally *ignores*
+            # such a timestamp rather than failing, since it owns its own
+            # stamping; this check is what makes the filtered path recoverable
+            # too, and it fires before anything is written either way.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: timestamp {member.mtime!r} "
+                f"is out of range"
+            )
+        if member.islnk():
+            # Same rule the fallback applies: a hardlink's source must be
+            # something this archive already wrote, not a preserved file the
+            # rollback was supposed to leave alone. `data` only checks the
+            # target is inside the destination, so it would happily link
+            # `.hub/secret.txt` into the restored tree.
+            src = _filter_destination_parts(member.linkname)
+            if src is None or src not in seen:
+                raise tarfile.TarError(
+                    f"refusing hardlink {member.name!r} -> {member.linkname!r}: "
+                    f"target is not an earlier member of this archive"
+                )
+        seen.add(parts)
         targets.append(parts)
 
     for parts in targets:
+        _detach_leaf(root, parts)
+
+
+def _detach_leaf(root: "Path", parts: "tuple[str, ...]") -> None:
+    """Unlink a hazardous leaf at ``parts``, by whichever means the OS allows.
+
+    The ``dir_fd`` route is preferred because it cannot be redirected. Where it
+    does not exist — Windows — an earlier version simply returned, which left
+    the hardlink hole wide open on **3.11.4+ as well**: the filtered path also
+    reaches this code, so upgrading Python did not close it. Refusing to
+    extract instead would disable rollback on Windows entirely, so the fallback
+    walks by path and checks each component with ``lstat`` before descending.
+
+    That check is racy in a way the ``dir_fd`` version is not, and the docstring
+    should not pretend otherwise. It is still the difference between "a
+    preserved hardlink is detached" and "the file it points at is overwritten".
+    """
+    if _HAVE_DIR_FD:
         try:
             parent = _walk_dirs(root, parts[:-1], create=False)
         except Exception:  # noqa: BLE001 - nothing reachable to clean
-            continue
+            return
         try:
             info = os.lstat(parts[-1], dir_fd=parent)
             if stat.S_ISLNK(info.st_mode) or (
@@ -728,6 +812,25 @@ def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
             pass
         finally:
             _close(parent)
+        return
+
+    current = Path(root)
+    for part in parts[:-1]:
+        current = current / part
+        try:
+            if os.path.islink(current) or not os.path.isdir(current):
+                return  # redirected or absent: nothing safely reachable
+        except OSError:
+            return
+    leaf = current / parts[-1]
+    try:
+        info = os.lstat(leaf)
+        if stat.S_ISLNK(info.st_mode) or (
+            stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+        ):
+            os.unlink(leaf)
+    except OSError:
+        pass
 
 
 def _copy_within(

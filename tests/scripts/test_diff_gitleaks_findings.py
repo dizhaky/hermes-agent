@@ -139,18 +139,6 @@ class TestExtraBaseReports:
         head = _write(tmp_path, "h.json", [_finding("AAA", file="new.py")])
         assert mod.main([str(base), str(head)]) == 1
 
-    def test_counts_from_both_reports_add_up(self, tmp_path):
-        base = _write(tmp_path, "b.json", [_finding("AAA")])
-        extra = _write(tmp_path, "d.json", [_finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
-        assert mod.main([str(base), str(head), "--extra-base", str(extra)]) == 0
-
-    def test_a_surplus_beyond_both_is_still_new(self, tmp_path):
-        base = _write(tmp_path, "b.json", [_finding("AAA")])
-        extra = _write(tmp_path, "d.json", [_finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA")] * 3)
-        assert mod.main([str(base), str(head), "--extra-base", str(extra)]) == 1
-
     def test_several_extra_bases_are_all_merged(self, tmp_path):
         base = _write(tmp_path, "b.json", [])
         e1 = _write(tmp_path, "d1.json", [_finding("AAA")])
@@ -177,54 +165,76 @@ def test_secret_values_are_never_printed(tmp_path, capsys):
     assert "a.py" in out.out and "anthropic-api-key" in out.out
 
 
-class TestAlternativeBaseSnapshots:
-    """The target tip and the previous branch head are *alternative* parents.
+class TestSeveralBaseSideReports:
+    """The base side arrives in several reports, and they are not tallies.
 
-    They describe the same paths at different revisions, so their counts must
-    be combined by maximum. Summing them exempts two copies of a value that
-    each parent holds only once — and a merge-only resolution that duplicates
-    a credential is exactly what the content pass exists to catch, so that
-    would pass silently.
+    The target tip, the deleted-file tree and the branch's previous head all
+    describe base-side state. Summing them exempts a value twice that two
+    parents each hold once; taking the maximum drops an occurrence the two
+    parents hold at *different* paths. Both were shipped in turn on this PR.
+    Unioning over (rule, secret, file, line) does both jobs.
     """
 
-    def test_overlapping_parents_do_not_sum(self, tmp_path):
-        base = _write(tmp_path, "b.json", [_finding("AAA")])
-        alt = _write(tmp_path, "p.json", [_finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
-        assert mod.main([str(base), str(head), "--alt-base", str(alt)]) == 1
+    def test_the_same_occurrence_in_two_parents_counts_once(self, tmp_path):
+        """Summing would exempt two copies; a merge duplicating one must fail."""
+        base = _write(tmp_path, "b.json", [_finding("AAA", file="a.py", line=1)])
+        prev = _write(tmp_path, "p.json", [_finding("AAA", file="a.py", line=1)])
+        head = _write(
+            tmp_path,
+            "h.json",
+            [_finding("AAA", file="a.py", line=1), _finding("AAA", file="a.py", line=9)],
+        )
+        assert mod.main([str(base), str(head), "--extra-base", str(prev)]) == 1
 
-    def test_summing_them_would_have_passed(self, tmp_path):
-        """The control: --extra-base on the same inputs exempts both copies."""
-        base = _write(tmp_path, "b.json", [_finding("AAA")])
-        alt = _write(tmp_path, "p.json", [_finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
-        assert mod.main([str(base), str(head), "--extra-base", str(alt)]) == 0
+    def test_disjoint_occurrences_from_two_parents_both_count(self, tmp_path):
+        """Maximum would drop one; a clean merge inheriting both must pass."""
+        base = _write(tmp_path, "b.json", [_finding("AAA", file="target_only.py")])
+        prev = _write(tmp_path, "p.json", [_finding("AAA", file="branch_only.py")])
+        head = _write(
+            tmp_path,
+            "h.json",
+            [_finding("AAA", file="target_only.py"), _finding("AAA", file="branch_only.py")],
+        )
+        assert mod.main([str(base), str(head), "--extra-base", str(prev)]) == 0
 
-    def test_the_larger_parent_wins(self, tmp_path):
-        base = _write(tmp_path, "b.json", [_finding("AAA")])
-        alt = _write(tmp_path, "p.json", [_finding("AAA"), _finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
-        assert mod.main([str(base), str(head), "--alt-base", str(alt)]) == 0
+    def test_a_third_copy_beyond_both_parents_is_new(self, tmp_path):
+        base = _write(tmp_path, "b.json", [_finding("AAA", file="a.py", line=1)])
+        prev = _write(tmp_path, "p.json", [_finding("AAA", file="b.py", line=1)])
+        head = _write(
+            tmp_path,
+            "h.json",
+            [
+                _finding("AAA", file="a.py", line=1),
+                _finding("AAA", file="b.py", line=1),
+                _finding("AAA", file="c.py", line=1),
+            ],
+        )
+        assert mod.main([str(base), str(head), "--extra-base", str(prev)]) == 1
 
-    def test_a_value_only_the_alt_parent_has_is_exempt(self, tmp_path):
+    def test_two_copies_in_one_parent_still_both_exempt(self, tmp_path):
+        """Multiplicity within a single snapshot is preserved by location."""
+        two = [_finding("AAA", file="a.py", line=1), _finding("AAA", file="a.py", line=2)]
+        assert _run(tmp_path, two, two) == 0
+
+    def test_a_value_only_a_secondary_report_has_is_exempt(self, tmp_path):
         base = _write(tmp_path, "b.json", [])
-        alt = _write(tmp_path, "p.json", [_finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA")])
-        assert mod.main([str(base), str(head), "--alt-base", str(alt)]) == 0
+        extra = _write(tmp_path, "d.json", [_finding("AAA", file="old.py")])
+        head = _write(tmp_path, "h.json", [_finding("AAA", file="new.py")])
+        assert mod.main([str(base), str(head), "--extra-base", str(extra)]) == 0
 
-    def test_alt_and_extra_compose(self, tmp_path):
-        """Deleted-file slice adds; the previous head maxes."""
-        base = _write(tmp_path, "b.json", [_finding("AAA")])
-        deleted = _write(tmp_path, "d.json", [_finding("BBB")])
-        alt = _write(tmp_path, "p.json", [_finding("AAA")])
-        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("BBB")])
-        args = [str(base), str(head), "--extra-base", str(deleted), "--alt-base", str(alt)]
-        assert mod.main(args) == 0
+    def test_the_alt_base_spelling_is_accepted(self, tmp_path):
+        """The workflow and older invocations use --alt-base; same behaviour."""
+        base = _write(tmp_path, "b.json", [_finding("AAA", file="a.py")])
+        prev = _write(tmp_path, "p.json", [_finding("AAA", file="b.py")])
+        head = _write(
+            tmp_path, "h.json", [_finding("AAA", file="a.py"), _finding("AAA", file="b.py")]
+        )
+        assert mod.main([str(base), str(head), "--alt-base", str(prev)]) == 0
 
-    def test_an_unparseable_alt_base_fails_closed(self, tmp_path):
+    def test_an_unparseable_secondary_report_fails_closed(self, tmp_path):
         base = _write(tmp_path, "b.json", [])
-        alt = tmp_path / "p.json"
-        alt.write_text("not json", encoding="utf-8")
+        extra = tmp_path / "d.json"
+        extra.write_text("not json", encoding="utf-8")
         head = _write(tmp_path, "h.json", [])
         with pytest.raises(SystemExit):
-            mod.main([str(base), str(head), "--alt-base", str(alt)])
+            mod.main([str(base), str(head), "--extra-base", str(extra)])

@@ -339,6 +339,48 @@ class TestDestinationStateCannotRedirect:
         assert outside.read_text() == "USER DATA\n"
         assert (dest / ".hub" / "x").exists()
 
+    def test_detachment_happens_without_dir_fd_too(self, tmp_path, extract, monkeypatch):
+        """Windows has no ``dir_fd``, and returning early left the hole open.
+
+        Not only on the old-interpreter fallback: the *filtered* path reaches
+        the same pre-pass, so upgrading Python did not close it. Refusing there
+        would disable rollback on Windows entirely, so the pass falls back to a
+        path walk that lstats each component before descending.
+        """
+        monkeypatch.setattr(file_safety, "_HAVE_DIR_FD", False)
+        outside, dest, archive = self._hazard_setup(tmp_path)
+        os.link(outside, dest / ".hub" / "x")
+        with tarfile.open(archive) as tar:
+            try:
+                extract(tar, dest)
+            except tarfile.TarError:
+                pass  # the fallback refuses outright without dir_fd; also safe
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_a_hardlink_to_a_non_member_is_refused(self, tmp_path, extract):
+        """A hardlink's source must be something this archive already wrote.
+
+        Resolving ``linkname`` against the extraction root accepted a
+        *preserved* file that no member created — ``.hub/secret.txt`` — and
+        pulled it into the restored tree. The stdlib path goes further and
+        makes a real hardlink, so later writes through the restored name mutate
+        state the rollback deliberately excludes.
+
+        This cannot reject a legitimate snapshot: ``tarfile.add()`` only emits
+        ``LNKTYPE`` for an inode it has already archived.
+        """
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        (dest / ".hub" / "secret.txt").write_text("HUB STATE\n")
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _link("stolen.txt", ".hub/secret.txt", hard=True)
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert not (dest / "stolen.txt").exists()
+        assert (dest / ".hub" / "secret.txt").read_text() == "HUB STATE\n"
+
     def test_existing_symlink_in_destination_is_refused(self, tmp_path, extract):
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -810,3 +852,55 @@ class TestMtimesMatchTheStdlib:
         assert int((dest / "skills").stat().st_mtime) == archived, (
             "directory mtime was clobbered by writing its children"
         )
+
+
+class TestOutOfRangeTimestamps:
+    """A timestamp must never be able to abort a restore.
+
+    A PAX member can carry a numeric mtime that ``os.utime`` cannot represent.
+    That raised ``OverflowError`` straight out of ``safe_extract_tar`` — and
+    because it is not a ``TarError``, ``rollback()`` skipped its
+    extraction-failure recovery, leaving the partial tree in place and the
+    original still staged. Metadata failing is not extraction failing.
+    """
+
+    # NaN is deliberately absent: `tarfile` cannot even write it
+    # ("cannot convert float NaN to integer"), so an archive carrying one does
+    # not exist. `_representable_mtime` still checks `isfinite`, but a test for
+    # an unreachable input would only assert a fiction.
+    @pytest.mark.parametrize("mtime", [1e300, -1e300])
+    def test_an_unrepresentable_mtime_fails_recoverably(self, tmp_path, extract, mtime):
+        """The contract is the *exception type*, not that extraction succeeds.
+
+        `os.utime` raises `OverflowError`, and `extractall` passes it straight
+        through. Callers catch `TarError`, so a non-TarError escaping here is
+        what makes `rollback()` skip recovery. Both paths must therefore raise
+        `TarError` — the stdlib path cannot be made to tolerate the value from
+        outside, so it is rejected before extraction starts.
+        """
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = _file("skills/a.txt", size=3)
+        info.mtime = mtime
+        directory = _dir("skills")
+        archive = tmp_path / "t.tar.gz"
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+            tar.addfile(directory)
+            tar.addfile(info, io.BytesIO(b"xxx"))
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+
+    def test_an_ordinary_mtime_is_unaffected(self, tmp_path, extract):
+        """The control: the bound must not reject a real timestamp."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = _file("skills/a.txt", size=3)
+        info.mtime = 946684800
+        archive = tmp_path / "t.tar.gz"
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+            tar.addfile(_dir("skills"))
+            tar.addfile(info, io.BytesIO(b"xxx"))
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "skills" / "a.txt").stat().st_mtime == 946684800
