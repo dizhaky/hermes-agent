@@ -617,6 +617,42 @@ class TestMtimesMatchTheStdlib:
     than just metadata.
     """
 
+    @pytest.mark.parametrize("kind", ["file", "dir", "hardlink"])
+    def test_a_fractional_mtime_is_not_truncated(self, tmp_path, extract, kind):
+        """PAX stores mtime as a float, and ``data`` restores the fraction.
+
+        The fallback coerced it with ``int()`` at all three write sites, so a
+        rollback's timestamps depended on the interpreter and two skills
+        touched within the same second collapsed to the same time — which is
+        exactly the ordering ``build_skill_nodes()`` reads.
+        """
+        archived = 946684800.75
+        info = _file("demo/f.txt", size=3)
+        info.mtime = archived
+        parent = _dir("demo")
+        parent.mtime = archived
+        link = _link("demo/hard.txt", "demo/f.txt", hard=True)
+        link.mtime = archived
+
+        members = {"file": (parent, info), "dir": (parent, info),
+                   "hardlink": (parent, info, link)}[kind]
+        archive = tmp_path / "t.tar.gz"
+        with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+            for member in members:
+                if member.isreg() and member.size:
+                    tar.addfile(member, io.BytesIO(b"x" * member.size))
+                else:
+                    tar.addfile(member)
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+
+        target = {"file": dest / "demo" / "f.txt", "dir": dest / "demo",
+                  "hardlink": dest / "demo" / "hard.txt"}[kind]
+        assert target.stat().st_mtime == pytest.approx(archived, abs=1e-6)
+
     def test_a_hardlinked_sibling_keeps_its_mtime(self, tmp_path, extract):
         """The copy must carry the archived time, like the regular-file path.
 

@@ -413,7 +413,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     #     not to, which made a restored snapshot's timestamps depend on the
     #     interpreter (``build_skill_nodes()`` falls back to SKILL.md's mtime).
     deferred_links: list[tuple[tuple[str, ...], str]] = []
-    dir_times: list[tuple[tuple[str, ...], int]] = []
+    dir_times: list[tuple[tuple[str, ...], float]] = []
 
     # Directory modes are deliberately NOT restored, because ``filter="data"``
     # does not restore them either: a 0700 directory comes out 0755 on the
@@ -428,7 +428,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
 
         if member.isdir():
             _close(_walk_dirs(root, parts, create=True))
-            dir_times.append((parts, int(member.mtime)))
+            dir_times.append((parts, member.mtime))
             continue
 
         if member.issym():
@@ -469,7 +469,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
             raise tarfile.TarError(f"cannot read archive member {member.name!r}")
         with extracted:
             _write_file(
-                root, parts, extracted, _data_filter_mode(member.mode), int(member.mtime)
+                root, parts, extracted, _data_filter_mode(member.mode), member.mtime
             )
 
     _create_symlinks(root, deferred_links)
@@ -580,7 +580,7 @@ def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> int:
 
 
 def _write_file(
-    root: "Path", parts: "tuple[str, ...]", source, mode: int, mtime: "int | None" = None
+    root: "Path", parts: "tuple[str, ...]", source, mode: int, mtime: "float | None" = None
 ) -> None:
     """Write ``source`` to ``parts`` under ``root`` without following links."""
     parent = _walk_dirs(root, parts[:-1], create=True)
@@ -624,7 +624,7 @@ def _copy_within(
 
     with handle:
         _write_file(
-            root, dst_parts, handle, _data_filter_mode(member.mode), int(member.mtime)
+            root, dst_parts, handle, _data_filter_mode(member.mode), member.mtime
         )
 
 
