@@ -1092,6 +1092,56 @@ class TestNormalizationIsAppliedUniformly:
         with tarfile.open(archive) as tar:
             extract(tar, dest)
 
+    def test_a_case_differing_symlink_invalidates_hardlink_provenance(
+        self, tmp_path, extract
+    ):
+        """Regular `demo/A`, symlink `demo/a -> ../.hub/x`, hardlink to `demo/A`.
+
+        `os.path.normcase` is the identity function on macOS while the default
+        filesystem there is case-insensitive, so host-keyed provenance saw two
+        names where that filesystem has one entry: the symlink replaced the
+        regular file, and the hardlink then inherited a source that was no
+        longer a file.
+
+        Invalidation is a *refusal* question, so it folds. On Linux the three
+        members really are distinct and this archive is legitimate — refusing
+        it is the deliberate cost, and this test pins that direction.
+        """
+        outside, dest = self._hazard(tmp_path)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _file("demo/A", size=3),
+            _link("demo/a", "../.hub/x", hard=False),
+            _link("demo/b", "demo/A", hard=True),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_hardlink_provenance_survives_an_unrelated_member(
+        self, tmp_path, extract
+    ):
+        """The control: folding invalidation must not refuse ordinary archives.
+
+        A regular file, an unrelated symlink beside it, then a hardlink to the
+        file. Nothing here aliases anything, so the hardlink still resolves.
+        """
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _file("demo/a", size=3),
+            _link("demo/link", "a", hard=False),
+            _link("demo/b", "demo/a", hard=True),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "demo" / "b").is_file()
+        assert (dest / "demo" / "link").is_symlink()
+
     def test_a_unicode_differing_symlink_ancestor(self, tmp_path, extract):
         """``é -> .hub`` composed, then ``é/x`` decomposed.
 

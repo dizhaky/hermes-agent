@@ -859,6 +859,24 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
                 f"earlier symlink member"
             )
 
+        if not member.isfile():
+            # Whatever this member is, it is not a regular file, so any
+            # regular-file provenance recorded for a name it could occupy is
+            # now stale. Invalidation is a *refusal* question — "could a later
+            # member have replaced my hardlink source?" — so it runs over every
+            # reading, not the host identity. `os.path.normcase` is the identity
+            # function on macOS while the default filesystem there is
+            # case-insensitive, so `demo/A` and `demo/a` are one entry that
+            # host-keyed provenance saw as two: a regular `demo/A`, a symlink
+            # `demo/a -> ../.hub/x`, then a hardlink to `demo/A` had the symlink
+            # standing in for the file. Folding here over-refuses that archive
+            # on Linux, where the two really are separate files. That is the
+            # cheap direction, and `tarfile.add()` cannot produce the shape.
+            #
+            # Ahead of the `isdir` return below, because a rule that sits after
+            # one has been the bypass three separate times.
+            seen_regular.difference_update(readings)
+
         if member.isdir():
             continue
 
@@ -892,12 +910,15 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
             )
 
         if member.islnk():
-            # The source must be an earlier *regular file* member. "Earlier
-            # member" alone was not enough: a symlink alias could stand in for
-            # it. `tarfile.add()` only emits LNKTYPE for a regular inode it
-            # already archived, so this cannot reject a real snapshot.
-            src = _host_identity(member.linkname)
-            if src is None or src not in seen_regular:
+            # The source must be an earlier *regular file* member, under
+            # every reading of its name. "Earlier member" alone was not enough:
+            # a symlink alias could stand in for it. Neither was the host
+            # identity, which treats `demo/A` and `demo/a` as two names on a
+            # filesystem that has one. `tarfile.add()` only emits LNKTYPE for a
+            # regular inode it already archived, so this cannot reject a real
+            # snapshot.
+            src = _canonical_readings(member.linkname)
+            if not src or not set(src) <= seen_regular:
                 raise tarfile.TarError(
                     f"refusing hardlink {member.name!r} -> {member.linkname!r}: "
                     f"target is not an earlier regular-file member"
@@ -906,7 +927,10 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
         if member.issym():
             symlinked.update(readings)
         else:
-            seen_regular.add(identity)
+            # Keyed by reading, not identity, so the invalidation above can
+            # find it. A hardlink member lands as a copy, so it is a regular
+            # file too and may itself be a later hardlink's source.
+            seen_regular.update(readings)
 
 
 def _copy_within(
