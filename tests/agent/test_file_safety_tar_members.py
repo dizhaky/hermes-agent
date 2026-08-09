@@ -16,6 +16,7 @@ Its live consumer is ``agent.curator_backup``, which extracts into the
 """
 
 import io
+import os
 import sys
 import tarfile
 from pathlib import Path
@@ -233,6 +234,96 @@ class TestEscapesAreBlocked:
         with tarfile.open(archive) as tar:
             with pytest.raises(tarfile.TarError):
                 extract(tar, dest)
+
+
+class TestDestinationStateCannotRedirect:
+    """The archive is not the only source of a redirect.
+
+    ``curator_backup`` preserves ``skills/.hub`` across a rollback, so the
+    destination can already contain a symlink when extraction starts. No link
+    member in the archive is required.
+    """
+
+    def test_existing_symlink_in_destination_is_refused(self, tmp_path, extract):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("ORIGINAL\n")
+
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        (dest / ".hub" / "link").symlink_to(outside, target_is_directory=True)
+
+        payload = b"PWNED\n"
+        through = tarfile.TarInfo(".hub/link/victim.txt")
+        through.size = len(payload)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _dir(".hub"), _dir(".hub/link"), through
+        )
+        with tarfile.open(archive) as tar:
+            try:
+                extract(tar, dest)
+            except tarfile.TarError:
+                pass
+        assert victim.read_text() == "ORIGINAL\n", "wrote through a pre-existing symlink"
+
+
+class TestHardlinksInRealSnapshots:
+    """``tarfile.add()`` stores a repeated inode as a LNKTYPE member.
+
+    A skills tree containing hardlinks therefore produces a snapshot with link
+    members through no fault of the archive's author, and refusing those would
+    make ``snapshot_skills()`` output unrestorable on the very interpreters
+    this fallback exists for.
+    """
+
+    def test_snapshot_with_hardlinks_round_trips(self, tmp_path, extract):
+        skills = tmp_path / "skills" / "demo"
+        skills.mkdir(parents=True)
+        (skills / "a.txt").write_text("content\n")
+        os.link(skills / "a.txt", skills / "b.txt")
+
+        archive = tmp_path / "snap.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for entry in sorted((tmp_path / "skills").iterdir()):
+                tar.add(str(entry), arcname=entry.name, recursive=True)
+        with tarfile.open(archive) as tar:
+            assert any(m.islnk() for m in tar.getmembers()), "fixture must contain a hardlink"
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+
+        a, b = dest / "demo" / "a.txt", dest / "demo" / "b.txt"
+        assert a.read_text() == "content\n"
+        assert b.read_text() == "content\n", "hardlinked sibling was not restored"
+
+    def test_hardlink_is_materialized_as_a_copy(self, tmp_path, monkeypatch):
+        """A copy has the same content but cannot reach anything else."""
+        skills = tmp_path / "skills" / "demo"
+        skills.mkdir(parents=True)
+        (skills / "a.txt").write_text("content\n")
+        os.link(skills / "a.txt", skills / "b.txt")
+        archive = tmp_path / "snap.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for entry in sorted((tmp_path / "skills").iterdir()):
+                tar.add(str(entry), arcname=entry.name, recursive=True)
+
+        real = tarfile.TarFile.extractall
+
+        def no_filter(self, path=".", members=None, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("no filter")
+            return real(self, path, members, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", no_filter)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with tarfile.open(archive) as tar:
+            safe_extract_tar(tar, dest)
+        a, b = dest / "demo" / "a.txt", dest / "demo" / "b.txt"
+        assert a.stat().st_ino != b.stat().st_ino
 
 
 class TestOrdinaryArchivesStillExtract:

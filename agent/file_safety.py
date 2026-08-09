@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Optional
 
@@ -381,7 +382,6 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     affected window is 3.11.0–3.11.3 only; on 3.11.4+ the real filter runs and
     internal links are still allowed.
     """
-    import shutil
     import tarfile
 
     try:
@@ -395,27 +395,160 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     root = Path(dest)
     for member in tar.getmembers():
         parts = _safe_member_parts(member.name)
-        target = root.joinpath(*parts)
 
         if member.isdir():
-            target.mkdir(parents=True, exist_ok=True)
+            _close(_walk_dirs(root, parts, create=True))
             continue
+
+        if member.islnk():
+            # tarfile.add() stores the second occurrence of a hardlinked inode
+            # as a LNKTYPE member, so an ordinary snapshot of a skills tree
+            # containing hardlinks has them — refusing outright would make the
+            # backup unrestorable on exactly the interpreters this path serves.
+            # Materialize it as a copy instead of creating a link: a copy has
+            # the same content and cannot be used to reach anything else.
+            # Hardlink targets are root-relative (tarfile joins linkname onto
+            # the extraction root), so they validate the same way names do.
+            src_parts = _safe_member_parts(member.linkname)
+            _copy_within(root, src_parts, parts, member)
+            continue
+
         if not member.isfile():
             raise tarfile.TarError(
                 f"refusing to extract non-regular member {member.name!r} "
                 f"(type {member.type!r}) without the 'data' filter"
             )
 
-        target.parent.mkdir(parents=True, exist_ok=True)
         extracted = tar.extractfile(member)
         if extracted is None:
             raise tarfile.TarError(f"cannot read archive member {member.name!r}")
-        with extracted, open(target, "wb") as dst:
-            shutil.copyfileobj(extracted, dst)
+        with extracted:
+            _write_file(root, parts, extracted, member.mode & 0o777)
+
+
+# ---------------------------------------------------------------------------
+# Path walking that refuses to traverse a symlink that is *already on disk*.
+#
+# Validating archive members is not enough: the destination can carry the
+# redirect. curator_backup deliberately preserves ``skills/.hub`` across a
+# rollback, so an existing ``skills/.hub/link -> /outside`` makes a perfectly
+# ordinary member ``.hub/link/victim.txt`` — no link member in the archive at
+# all — land outside the skills tree. Reproduced before this was added.
+#
+# Each component is therefore opened with ``O_NOFOLLOW`` relative to its parent
+# directory descriptor, so an existing symlink anywhere along the path raises
+# instead of being followed.
+# ---------------------------------------------------------------------------
+
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_HAVE_DIR_FD = (
+    hasattr(os, "supports_dir_fd")
+    and os.open in os.supports_dir_fd
+    and os.mkdir in os.supports_dir_fd
+)
+
+
+def _close(fd: "int | None") -> None:
+    if fd is not None:
+        os.close(fd)
+
+
+def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> "int | None":
+    """Open ``parts`` under ``root`` as a directory fd, never following a link.
+
+    Returns ``None`` where the platform cannot do this (Windows has no
+    ``O_NOFOLLOW`` and no ``dir_fd`` support); callers then fall back to plain
+    path operations, which is the pre-existing behaviour rather than a
+    regression, and is noted as a gap.
+    """
+    import tarfile
+
+    if not _HAVE_DIR_FD:
+        if create:
+            root.joinpath(*parts).mkdir(parents=True, exist_ok=True)
+        return None
+
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            if create:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            try:
+                nxt = os.open(
+                    part, os.O_RDONLY | os.O_DIRECTORY | _O_NOFOLLOW, dir_fd=fd
+                )
+            except OSError as exc:
+                raise tarfile.TarError(
+                    f"refusing to extract through {part!r}: the destination path "
+                    f"component is a symlink or not a directory ({exc.strerror})"
+                ) from exc
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _write_file(
+    root: "Path", parts: "tuple[str, ...]", source, mode: int
+) -> None:
+    """Write ``source`` to ``parts`` under ``root`` without following links."""
+    parent = _walk_dirs(root, parts[:-1], create=True)
+    name = parts[-1]
+    try:
+        if parent is None:
+            target = root.joinpath(*parts)
+            with open(target, "wb") as dst:
+                shutil.copyfileobj(source, dst)
+        else:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
+            fd = os.open(name, flags, 0o600, dir_fd=parent)
+            with os.fdopen(fd, "wb") as dst:
+                shutil.copyfileobj(source, dst)
         try:
-            target.chmod(member.mode & 0o777)
-        except OSError:
+            if parent is None:
+                root.joinpath(*parts).chmod(mode)
+            else:
+                os.chmod(name, mode, dir_fd=parent, follow_symlinks=False)
+        except (OSError, NotImplementedError):
             pass
+    finally:
+        _close(parent)
+
+
+def _copy_within(
+    root: "Path", src_parts: "tuple[str, ...]", dst_parts: "tuple[str, ...]", member
+) -> None:
+    """Copy an already-extracted member to another path inside ``root``."""
+    import tarfile
+
+    parent = _walk_dirs(root, src_parts[:-1], create=False)
+    try:
+        if parent is None:
+            src_path = root.joinpath(*src_parts)
+            if not src_path.is_file():
+                raise tarfile.TarError(
+                    f"hardlink {member.name!r} -> {member.linkname!r}: target not extracted"
+                )
+            handle = open(src_path, "rb")
+        else:
+            try:
+                fd = os.open(src_parts[-1], os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent)
+            except OSError as exc:
+                raise tarfile.TarError(
+                    f"hardlink {member.name!r} -> {member.linkname!r}: "
+                    f"cannot read target ({exc.strerror})"
+                ) from exc
+            handle = os.fdopen(fd, "rb")
+    finally:
+        _close(parent)
+
+    with handle:
+        _write_file(root, dst_parts, handle, member.mode & 0o777)
 
 
 def _safe_member_parts(name: str) -> tuple[str, ...]:
