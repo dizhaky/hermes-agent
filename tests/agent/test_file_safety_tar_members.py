@@ -237,12 +237,31 @@ class TestEscapesAreBlocked:
                 extract(tar, dest)
 
 
-class TestDestinationStateCannotRedirect:
-    """The archive is not the only source of a redirect.
+PRESERVED = frozenset({".hub", ".curator_backups"})
 
-    ``curator_backup`` preserves ``skills/.hub`` across a rollback, so the
-    destination can already contain a symlink when extraction starts. No link
-    member in the archive is required.
+
+class TestDestinationStateCannotRedirect:
+    """The destination is not a clean tree, and guarding it did not work.
+
+    ``curator_backup.rollback()`` moves every top-level entry aside *except*
+    ``.hub`` and ``.curator_backups``, so those two are all that extraction can
+    collide with — and ``snapshot_skills()`` excludes both, so no legitimate
+    archive contains a member under either.
+
+    An earlier version tried to inspect the destination and detach hazards
+    before handing over. It produced a P1 in six consecutive review rounds: a
+    preserved hardlink truncated in place, a Windows junction walked through
+    and unlinked, a symlink *member* redirecting a later member, a contained
+    symlink already in the tree doing the same, a hardlink whose source was a
+    symlink member. Each fix closed an instance and the class survived, for the
+    reason round six already established — a pass over member metadata cannot
+    know where a member lands.
+
+    Refusing members under the preserved names closes the class instead:
+    extraction only ever writes paths that do not exist yet, and an empty
+    destination has no hardlink, junction or symlink to abuse. These tests
+    assert the *property* — the outside file is untouched — for every redirect
+    previously found.
     """
 
     def _hazard_setup(self, tmp_path):
@@ -250,199 +269,92 @@ class TestDestinationStateCannotRedirect:
         outside.write_text("USER DATA\n")
         dest = tmp_path / "skills"
         (dest / ".hub").mkdir(parents=True)
-        archive = _tar_with(tmp_path / "t.tar.gz", _file(".hub/x", size=5))
-        return outside, dest, archive
+        return outside, dest
 
-    def test_an_existing_hardlink_leaf_is_replaced_not_truncated(self, tmp_path, extract):
-        """A hardlink is the file, not a reference to it.
+    def _extract(self, extract, archive, dest):
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
 
-        ``O_NOFOLLOW`` rejects a symlink at the leaf and says nothing about a
-        hardlink, so opening it with ``O_TRUNC`` overwrote whatever else shared
-        that inode — a user file outside the skills tree, reachable because
-        ``curator_backup`` preserves ``.hub``. Both extraction paths did it.
-        """
-        outside, dest, archive = self._hazard_setup(tmp_path)
+    def test_a_preserved_hardlink_is_never_reached(self, tmp_path, extract):
+        outside, dest = self._hazard_setup(tmp_path)
         os.link(outside, dest / ".hub" / "x")
-        with tarfile.open(archive) as tar:
-            extract(tar, dest)
+        self._extract(extract, _tar_with(tmp_path / "t.tar.gz", _file(".hub/x", size=5)), dest)
         assert outside.read_text() == "USER DATA\n"
-        assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
-        assert outside.stat().st_nlink == 1
+        assert outside.stat().st_nlink == 2
 
-    def test_an_existing_symlink_leaf_is_not_written_through(self, tmp_path, extract):
-        """Same class at the leaf rather than a path component."""
-        outside, dest, archive = self._hazard_setup(tmp_path)
+    def test_a_preserved_symlink_leaf_is_never_reached(self, tmp_path, extract):
+        outside, dest = self._hazard_setup(tmp_path)
         (dest / ".hub" / "x").symlink_to(outside)
-        with tarfile.open(archive) as tar:
-            extract(tar, dest)
-        assert outside.read_text() == "USER DATA\n"
-        assert not (dest / ".hub" / "x").is_symlink()
-        assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
-
-    def test_an_ordinary_existing_file_is_still_overwritten(self, tmp_path, extract):
-        """The control: replacing content must keep working."""
-        _, dest, archive = self._hazard_setup(tmp_path)
-        (dest / ".hub" / "x").write_text("stale")
-        with tarfile.open(archive) as tar:
-            extract(tar, dest)
-        assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
-
-    @pytest.mark.parametrize("hazard", ["hardlink", "symlink"])
-    def test_a_slash_prefixed_member_still_detaches(self, tmp_path, extract, hazard):
-        r"""The pre-pass must normalize names the way the *filter* does.
-
-        ``filter="data"`` strips a leading ``/`` and then checks for an escape,
-        so ``/.hub/x`` is extracted as ``.hub/x``. ``_safe_member_parts``
-        rejects it outright as absolute, so a pre-pass using the strict rule
-        skipped it as "extraction will reject this" — and extraction did not.
-        The hazard was then hit at full force.
-
-        The asserted property is that the outside file survives, not *how*.
-        The two paths legitimately differ here: the fallback refuses an
-        absolute member name outright, while the stdlib normalizes it and
-        extracts — so it has to detach first. Both are safe; only one of them
-        extracts.
-        """
-        outside, dest, _ = self._hazard_setup(tmp_path)
-        if hazard == "hardlink":
-            os.link(outside, dest / ".hub" / "x")
-        else:
-            (dest / ".hub" / "x").symlink_to(outside)
-        archive = _tar_with(tmp_path / "abs.tar.gz", _file("/.hub/x", size=5))
-        with tarfile.open(archive) as tar:
-            try:
-                extract(tar, dest)
-            except tarfile.TarError:
-                pass  # the fallback refuses absolute names; also safe
+        self._extract(extract, _tar_with(tmp_path / "t.tar.gz", _file(".hub/x", size=5)), dest)
         assert outside.read_text() == "USER DATA\n"
 
-    def test_an_archive_the_filter_rejects_leaves_the_destination_alone(
+    def test_a_contained_symlink_in_the_preserved_tree_is_never_reached(
         self, tmp_path, extract
     ):
-        """Detaching is destructive, so it must not happen for a doomed archive.
-
-        ``rollback()`` skips ``.hub`` during failure cleanup, so anything
-        unlinked here does not come back. Merely *skipping* the pass is not the
-        answer either — members extract in order, so an invalid member appended
-        after a valid one would disable the pass and let the hardlink be
-        truncated anyway. Both properties are asserted: the preserved entry
-        survives *and* the outside file is untouched.
-        """
-        outside, dest, _ = self._hazard_setup(tmp_path)
-        os.link(outside, dest / ".hub" / "x")
-        fifo = tarfile.TarInfo("skills/weird")
-        fifo.type = tarfile.FIFOTYPE
-        archive = _tar_with(tmp_path / "bad.tar.gz", _file(".hub/x", size=5), fifo)
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError):
-                extract(tar, dest)
-        assert outside.read_text() == "USER DATA\n"
-        assert (dest / ".hub" / "x").exists()
-
-    def test_detachment_happens_without_dir_fd_too(self, tmp_path, extract, monkeypatch):
-        """Windows has no ``dir_fd``, and returning early left the hole open.
-
-        Not only on the old-interpreter fallback: the *filtered* path reaches
-        the same pre-pass, so upgrading Python did not close it. Refusing there
-        would disable rollback on Windows entirely, so the pass falls back to a
-        path walk that lstats each component before descending.
-        """
-        monkeypatch.setattr(file_safety, "_HAVE_DIR_FD", False)
-        outside, dest, archive = self._hazard_setup(tmp_path)
-        os.link(outside, dest / ".hub" / "x")
-        with tarfile.open(archive) as tar:
-            try:
-                extract(tar, dest)
-            except tarfile.TarError:
-                pass  # the fallback refuses outright without dir_fd; also safe
+        """``.hub/link -> sub`` with ``.hub/sub/x`` hardlinked outside."""
+        outside, dest = self._hazard_setup(tmp_path)
+        (dest / ".hub" / "sub").mkdir()
+        os.link(outside, dest / ".hub" / "sub" / "x")
+        (dest / ".hub" / "link").symlink_to("sub")
+        self._extract(
+            extract, _tar_with(tmp_path / "t.tar.gz", _file(".hub/link/x", size=5)), dest
+        )
         assert outside.read_text() == "USER DATA\n"
 
-    def test_a_hardlink_to_a_non_member_is_refused(self, tmp_path, extract):
-        """A hardlink's source must be something this archive already wrote.
-
-        Resolving ``linkname`` against the extraction root accepted a
-        *preserved* file that no member created — ``.hub/secret.txt`` — and
-        pulled it into the restored tree. The stdlib path goes further and
-        makes a real hardlink, so later writes through the restored name mutate
-        state the rollback deliberately excludes.
-
-        This cannot reject a legitimate snapshot: ``tarfile.add()`` only emits
-        ``LNKTYPE`` for an inode it has already archived.
-        """
-        dest = tmp_path / "skills"
-        (dest / ".hub").mkdir(parents=True)
-        (dest / ".hub" / "secret.txt").write_text("HUB STATE\n")
-        archive = _tar_with(
-            tmp_path / "t.tar.gz", _link("stolen.txt", ".hub/secret.txt", hard=True)
-        )
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError):
-                extract(tar, dest)
-        assert not (dest / "stolen.txt").exists()
-        assert (dest / ".hub" / "secret.txt").read_text() == "HUB STATE\n"
-
-    def test_a_symlink_member_cannot_redirect_a_later_member(self, tmp_path, extract):
-        """Round six's bypass, reappearing inside the pre-pass.
-
-        A pass over member metadata cannot know where a member will land,
-        because an earlier member can change what a later path means. With
-        ``a -> .hub`` followed by ``a/x``, nothing named ``a`` exists when the
-        pre-pass looks; ``extractall`` then creates the symlink and writes
-        through it onto the preserved hardlink. Reproduced — the outside inode
-        came back holding the archived bytes.
-
-        Refusing is decidable from the members alone and cannot reject a real
-        snapshot: tar does not archive content underneath a symlink, so
-        ``snapshot_skills()`` never emits members below a symlink member.
-        """
-        outside, dest, _ = self._hazard_setup(tmp_path)
+    @pytest.mark.parametrize("spelling", [".hub/x", "/.hub/x", "./.hub/x"])
+    def test_the_refusal_is_not_defeated_by_spelling(self, tmp_path, extract, spelling):
+        """``data`` strips a leading slash, so the check normalizes first."""
+        outside, dest = self._hazard_setup(tmp_path)
         os.link(outside, dest / ".hub" / "x")
-        archive = _tar_with(
-            tmp_path / "redirect.tar.gz",
-            _link("a", ".hub", hard=False),
-            _file("a/x", size=5),
-        )
-        with tarfile.open(archive) as tar:
-            with pytest.raises(tarfile.TarError):
-                extract(tar, dest)
+        self._extract(extract, _tar_with(tmp_path / "t.tar.gz", _file(spelling, size=5)), dest)
         assert outside.read_text() == "USER DATA\n"
 
-    def test_a_symlink_member_with_no_members_under_it_is_fine(self, tmp_path, extract):
-        """The control: an ordinary symlinked skill must still restore."""
-        dest = tmp_path / "dest"
-        dest.mkdir()
+    def test_a_symlink_member_cannot_redirect_into_the_preserved_tree(
+        self, tmp_path, extract
+    ):
+        """``a -> .hub`` then ``a/x``: refused as a member under a symlink."""
+        outside, dest = self._hazard_setup(tmp_path)
+        os.link(outside, dest / ".hub" / "x")
         archive = _tar_with(
-            tmp_path / "ok.tar.gz",
-            _dir("skills"),
-            _file("skills/real.md", size=4),
-            _link("skills/alias.md", "real.md", hard=False),
+            tmp_path / "t.tar.gz", _link("a", ".hub", hard=False), _file("a/x", size=5)
+        )
+        self._extract(extract, archive, dest)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_a_hardlink_whose_source_is_a_symlink_member_is_refused(
+        self, tmp_path, extract
+    ):
+        """``a -> .hub/x``, hardlink ``b -> a``, then a regular ``b``.
+
+        "An earlier member" was not a strong enough rule: the alias made ``b``
+        a symlink that the final member followed. The source must be an earlier
+        *regular file* member.
+        """
+        outside, dest = self._hazard_setup(tmp_path)
+        os.link(outside, dest / ".hub" / "x")
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _link("a", ".hub/x", hard=False),
+            _link("b", "a", hard=True),
+            _file("b", size=5),
+        )
+        self._extract(extract, archive, dest)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_an_ordinary_archive_still_extracts_into_a_live_destination(
+        self, tmp_path, extract
+    ):
+        """The control: refusing must not mean refusing everything."""
+        _, dest = self._hazard_setup(tmp_path)
+        (dest / "old.md").write_text("stale")
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _dir("demo"), _file("demo/SKILL.md", size=7)
         )
         with tarfile.open(archive) as tar:
-            extract(tar, dest)
-        assert (dest / "skills" / "alias.md").is_symlink()
-
-    def test_existing_symlink_in_destination_is_refused(self, tmp_path, extract):
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        victim = outside / "victim.txt"
-        victim.write_text("ORIGINAL\n")
-
-        dest = tmp_path / "skills"
-        (dest / ".hub").mkdir(parents=True)
-        (dest / ".hub" / "link").symlink_to(outside, target_is_directory=True)
-
-        payload = b"PWNED\n"
-        through = tarfile.TarInfo(".hub/link/victim.txt")
-        through.size = len(payload)
-        archive = _tar_with(
-            tmp_path / "t.tar.gz", _dir(".hub"), _dir(".hub/link"), through
-        )
-        with tarfile.open(archive) as tar:
-            try:
-                extract(tar, dest)
-            except tarfile.TarError:
-                pass
-        assert victim.read_text() == "ORIGINAL\n", "wrote through a pre-existing symlink"
+            extract(tar, dest, refuse_top_level=PRESERVED)
+        assert (dest / "demo" / "SKILL.md").read_bytes() == b"x" * 7
+        assert (dest / ".hub").is_dir()
 
 
 class TestHardlinksInRealSnapshots:

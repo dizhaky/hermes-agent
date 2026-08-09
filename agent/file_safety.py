@@ -343,7 +343,12 @@ def get_read_block_error(path: str) -> Optional[str]:
     return None
 
 
-def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
+def safe_extract_tar(
+    tar: "tarfile.TarFile",
+    dest: "Path | str",
+    *,
+    refuse_top_level: "frozenset[str] | None" = None,
+) -> None:
     """Extract ``tar`` into ``dest`` with ``data``-filter semantics everywhere.
 
     ``tarfile``'s ``filter="data"`` landed in 3.11.4 while this project supports
@@ -397,7 +402,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     # The stdlib filter has the same hardlink hole, and unlike the fallback it
     # is the path that actually runs on every supported interpreter, so the
     # hazards are cleared out of the destination before handing over.
-    _detach_unsafe_destinations(tar, Path(dest))
+    _validate_members(tar, refuse_top_level or frozenset())
 
     try:
         tar.extractall(dest, filter="data")  # type: ignore[call-arg]
@@ -692,58 +697,35 @@ def _filter_destination_parts(name: str) -> "tuple[str, ...] | None":
     return parts
 
 
-def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
-    """Unlink destination leaves that would be written *through* rather than over.
+def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]") -> None:
+    """Reject an archive the destination cannot safely receive.
 
-    Two states in an existing destination make an ordinary regular member
-    dangerous, and neither involves a link member in the archive:
+    Everything here is decided from the **members alone**. That boundary is the
+    point. Round six established that a pass over member metadata cannot know
+    where a member will land, because an earlier member changes what a later
+    path means — and the previous version of this function ignored that and
+    tried to inspect the destination anyway. It produced a P1 in six
+    consecutive review rounds: a preserved hardlink truncated in place, a
+    Windows junction walked through and unlinked, a symlink member redirecting
+    a later member, a contained symlink already in the tree doing the same.
+    Each fix closed an instance; the class survived every time.
 
-    * a **hardlink** — the same inode under another name, possibly outside the
-      tree. ``O_NOFOLLOW`` does not help: a hardlink is the file, not a
-      reference to it, so opening it with ``O_TRUNC`` destroys the other name's
-      content. Verified against both extraction paths.
-    * a **symlink** at the leaf — the stdlib writes through it.
-
-    ``curator_backup`` preserves ``skills/.hub`` across a rollback, so the
-    destination is not a clean tree and either state can be present.
-
-    **Nothing is modified until the whole archive has been looked at**, and a
-    member the filter will reject aborts *before* extraction rather than being
-    skipped past. Both halves matter, and the first attempt at this got the
-    second one wrong:
-
-    * Detaching for an archive that then fails validation destroys preserved
-      state for nothing — ``rollback()`` skips ``.hub`` during failure cleanup,
-      so it does not come back.
-    * But merely *cancelling* the pass and letting ``extractall`` run is worse,
-      not better. Members are extracted in order, so a crafted archive could
-      append one invalid member, disable this pass, and have the hardlink
-      truncated anyway before the filter noticed. Measured: outside file
-      ``PWNED``. Raising up front is the only option that leaves both the
-      destination and the preserved state untouched.
-
-    The two checks are deliberately no stricter than ``data`` itself, so this
-    never refuses an archive the filter would have accepted. Link *targets* are
-    not checked: ``data`` allows a contained ``../sibling``, and rejecting
-    those here would break the symlinked skills that round eight established
-    must round-trip.
-
-    Within that, still **best-effort**: a path it cannot resolve is left alone
-    rather than raised on. ``_walk_dirs`` refuses to traverse a symlinked
-    directory, which is right for the fallback but would newly break the stdlib
-    path for *legitimate* symlinked skills, which ``agent/skill_utils.py``
-    supports.
+    What closes the class is ``refuse_top_level``. ``curator_backup`` excludes
+    ``.hub`` and ``.curator_backups`` from every snapshot it writes, and
+    ``rollback()`` moves *everything else* aside before extracting — so the
+    destination holds only those two directories, and a legitimate archive
+    never contains a member under either. Refusing such members means
+    extraction only ever writes to paths that do not exist yet. An empty
+    destination cannot carry a hardlink, a junction or a symlink, so there is
+    nothing left to detach and no evolving tree to predict.
     """
     import tarfile
 
-    targets: list[tuple[str, ...]] = []
-    seen: set[tuple[str, ...]] = set()
+    seen_regular: set[tuple[str, ...]] = set()
     symlinked: set[tuple[str, ...]] = set()
     for member in tar.getmembers():
         parts = _filter_destination_parts(member.name)
         if member.isdir():
-            if parts is not None:
-                seen.add(parts)
             continue
         if not (member.isfile() or member.islnk() or member.issym()):
             raise tarfile.TarError(
@@ -752,117 +734,45 @@ def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
             )
         if parts is None:
             raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+        if parts[0] in refuse_top_level:
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: {parts[0]!r} is preserved "
+                f"across a restore and is never part of a snapshot"
+            )
         if not _representable_mtime(member.mtime):
-            # `os.utime` raises OverflowError on an out-of-range PAX mtime, and
-            # `extractall` lets it straight through — it is not a TarError, so
-            # `rollback()` skips its extraction-failure recovery and leaves the
-            # partial tree visible with the original still staged. Raising here
-            # makes the failure recoverable. The fallback additionally *ignores*
-            # such a timestamp rather than failing, since it owns its own
-            # stamping; this check is what makes the filtered path recoverable
-            # too, and it fires before anything is written either way.
+            # `os.utime` raises OverflowError on an out-of-range PAX mtime and
+            # `extractall` lets it through — not a TarError, so `rollback()`
+            # skips its extraction-failure recovery. Rejecting here makes the
+            # failure recoverable, before anything is written.
             raise tarfile.TarError(
                 f"refusing to extract {member.name!r}: timestamp {member.mtime!r} "
                 f"is out of range"
             )
+        if any(parts[: len(sym)] == sym for sym in symlinked):
+            # A symlink member changes what a later member's path means. Safe
+            # to refuse: tar does not archive content underneath a symlink, so
+            # `snapshot_skills()` never emits members below a symlink member.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: it resolves through an "
+                f"earlier symlink member"
+            )
         if member.islnk():
-            # Same rule the fallback applies: a hardlink's source must be
-            # something this archive already wrote, not a preserved file the
-            # rollback was supposed to leave alone. `data` only checks the
-            # target is inside the destination, so it would happily link
-            # `.hub/secret.txt` into the restored tree.
+            # The source must be an earlier *regular file* member. "Earlier
+            # member" alone was not enough: `a -> .hub/x` (symlink), `b -> a`
+            # (hardlink), then a regular `b` made `b` a symlink alias that the
+            # final member followed. `tarfile.add()` only emits LNKTYPE for a
+            # regular inode it already archived, so requiring that cannot
+            # reject a real snapshot.
             src = _filter_destination_parts(member.linkname)
-            if src is None or src not in seen:
+            if src is None or src not in seen_regular:
                 raise tarfile.TarError(
                     f"refusing hardlink {member.name!r} -> {member.linkname!r}: "
-                    f"target is not an earlier member of this archive"
+                    f"target is not an earlier regular-file member"
                 )
         if member.issym():
             symlinked.add(parts)
-        elif any(parts[: len(sym)] == sym for sym in symlinked):
-            # Round six, in a new place. A pre-pass over member metadata cannot
-            # know where a member will land, because an *earlier* member can
-            # change what a later path means: `a -> .hub` followed by `a/x`
-            # resolves onto the preserved hardlink after this pass has already
-            # finished looking. Reproduced — the outside inode came back
-            # holding the archived bytes.
-            #
-            # Refusing is decidable here and cannot reject a real snapshot: tar
-            # does not archive content *underneath* a symlink, so
-            # `snapshot_skills()` never emits members below a symlink member.
-            raise tarfile.TarError(
-                f"refusing to extract {member.name!r}: it resolves through the "
-                f"symlink member {'/'.join(next(sym for sym in symlinked if parts[: len(sym)] == sym))!r}"
-            )
-        seen.add(parts)
-        targets.append(parts)
-
-    for parts in targets:
-        _detach_leaf(root, parts)
-
-
-def _detach_leaf(root: "Path", parts: "tuple[str, ...]") -> None:
-    """Unlink a hazardous leaf at ``parts``, by whichever means the OS allows.
-
-    The ``dir_fd`` route is preferred because it cannot be redirected. Where it
-    does not exist — Windows — an earlier version simply returned, which left
-    the hardlink hole wide open on **3.11.4+ as well**: the filtered path also
-    reaches this code, so upgrading Python did not close it. Refusing to
-    extract instead would disable rollback on Windows entirely, so the fallback
-    walks by path and checks each component with ``lstat`` before descending.
-
-    That check is racy in a way the ``dir_fd`` version is not, and the docstring
-    should not pretend otherwise. It is still the difference between "a
-    preserved hardlink is detached" and "the file it points at is overwritten".
-    """
-    if _HAVE_DIR_FD:
-        try:
-            parent = _walk_dirs(root, parts[:-1], create=False)
-        except Exception:  # noqa: BLE001 - nothing reachable to clean
-            return
-        try:
-            info = os.lstat(parts[-1], dir_fd=parent)
-            if stat.S_ISLNK(info.st_mode) or (
-                stat.S_ISREG(info.st_mode) and info.st_nlink > 1
-            ):
-                os.unlink(parts[-1], dir_fd=parent)
-        except OSError:
-            pass
-        finally:
-            _close(parent)
-        return
-
-    current = Path(root)
-    for part in parts[:-1]:
-        current = current / part
-        try:
-            info = os.lstat(current)
-        except OSError:
-            return
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            return  # redirected or absent: nothing safely reachable
-        # `os.path.islink()` is False for a Windows directory *junction* while
-        # `os.path.isdir()` follows it, so the first version of this walk
-        # descended through one and then unlinked an entry outside the tree —
-        # the replacement doing the damage the early return had merely allowed.
-        # `lstat` does not follow, and a reparse point is identified by its tag.
-        tag = getattr(info, "st_reparse_tag", None)
-        if tag:
-            return
-        if tag is None and os.name == "nt":
-            # The attribute should exist on Windows (3.8+). If it does not,
-            # junctions cannot be distinguished from directories here, and this
-            # walk is about to delete things — so stop rather than guess.
-            return
-    leaf = current / parts[-1]
-    try:
-        info = os.lstat(leaf)
-        if stat.S_ISLNK(info.st_mode) or (
-            stat.S_ISREG(info.st_mode) and info.st_nlink > 1
-        ):
-            os.unlink(leaf)
-    except OSError:
-        pass
+        else:
+            seen_regular.add(parts)
 
 
 def _copy_within(

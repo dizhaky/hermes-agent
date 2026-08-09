@@ -654,7 +654,15 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
             # substitute for the filter.
             from agent.file_safety import safe_extract_tar
 
-            safe_extract_tar(tf, skills)
+            # The excluded names are preserved across a rollback and are
+            # never part of a snapshot, so a member under either is
+            # illegitimate. Passing them makes the destination effectively
+            # empty for extraction purposes — everything else was staged
+            # aside above — which is what removes the whole class of
+            # destination-state hazards rather than guarding each one.
+            safe_extract_tar(
+                tf, skills, refuse_top_level=frozenset(_EXCLUDE_TOP_LEVEL)
+            )
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover. A partial extract can leave entries the
         # original tree never had, so drop those first, otherwise the
