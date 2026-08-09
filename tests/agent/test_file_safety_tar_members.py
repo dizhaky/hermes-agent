@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from agent import file_safety
 from agent.file_safety import safe_extract_tar
 
 # The manual path is only reachable on 3.11.0-3.11.3. Everywhere else the real
@@ -324,6 +325,50 @@ class TestHardlinksInRealSnapshots:
             safe_extract_tar(tar, dest)
         a, b = dest / "demo" / "a.txt", dest / "demo" / "b.txt"
         assert a.stat().st_ino != b.stat().st_ino
+
+
+class TestPlatformsWithoutDirFdAreRefused:
+    """No enforcement means no extraction, not extraction without enforcement.
+
+    Windows has neither ``O_NOFOLLOW`` nor ``dir_fd`` support, so the
+    component walk cannot run there. An earlier version fell back to plain path
+    operations and documented the hole; that fallback would follow a directory
+    junction already present in the destination — the very redirect the walk
+    exists to refuse.
+    """
+
+    def test_extraction_is_refused_without_dir_fd(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(file_safety, "_HAVE_DIR_FD", False)
+        real = tarfile.TarFile.extractall
+
+        def no_filter(self, path=".", members=None, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("no filter")
+            return real(self, path, members, **kwargs)
+
+        monkeypatch.setattr(tarfile.TarFile, "extractall", no_filter)
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _dir("skills"), _file("skills/a.md", size=3)
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError, match="3.11.4"):
+                safe_extract_tar(tar, dest)
+        assert not (dest / "skills" / "a.md").exists(), "wrote without enforcement"
+
+    def test_the_filtered_path_is_unaffected(self, tmp_path, monkeypatch):
+        """Only the fallback is refused — 3.11.4+ never reaches the walk."""
+        monkeypatch.setattr(file_safety, "_HAVE_DIR_FD", False)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz", _dir("skills"), _file("skills/a.md", size=3)
+        )
+        with tarfile.open(archive) as tar:
+            safe_extract_tar(tar, dest)
+        assert (dest / "skills" / "a.md").is_file()
 
 
 class TestDirectoryModesMatchTheStdlib:

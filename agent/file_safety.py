@@ -464,25 +464,37 @@ _HAVE_DIR_FD = (
 )
 
 
-def _close(fd: "int | None") -> None:
-    if fd is not None:
-        os.close(fd)
+def _close(fd: int) -> None:
+    os.close(fd)
 
 
-def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> "int | None":
+def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> int:
     """Open ``parts`` under ``root`` as a directory fd, never following a link.
 
-    Returns ``None`` where the platform cannot do this (Windows has no
-    ``O_NOFOLLOW`` and no ``dir_fd`` support); callers then fall back to plain
-    path operations, which is the pre-existing behaviour rather than a
-    regression, and is noted as a gap.
+    Refuses outright where the platform cannot enforce that. An earlier version
+    fell back to plain path operations here and documented the hole, on the
+    grounds that it merely preserved pre-existing behaviour — but a fallback
+    that silently performs no enforcement, inside the function whose whole
+    purpose is to guarantee it, is not a gap worth documenting. It is one worth
+    closing.
+
+    The combination this refuses is narrow: an interpreter old enough to lack
+    ``filter="data"`` (3.11.0–3.11.3) *and* a platform without ``dir_fd``
+    support (Windows). On 3.11.4+ the real filter runs and this is never
+    reached. Refusing to restore a backup is a poor outcome; restoring it
+    through a directory junction that redirects outside the tree is a worse
+    one, and upgrading to 3.11.4 resolves it.
     """
     import tarfile
 
     if not _HAVE_DIR_FD:
-        if create:
-            root.joinpath(*parts).mkdir(parents=True, exist_ok=True)
-        return None
+        raise tarfile.TarError(
+            "refusing to extract: this interpreter predates tarfile's 'data' "
+            "filter (added in 3.11.4) and this platform cannot open paths "
+            "without following links, so extraction cannot be made safe "
+            "against a redirect already present in the destination. "
+            "Upgrade to Python 3.11.4 or newer."
+        )
 
     fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -516,20 +528,12 @@ def _write_file(
     parent = _walk_dirs(root, parts[:-1], create=True)
     name = parts[-1]
     try:
-        if parent is None:
-            target = root.joinpath(*parts)
-            with open(target, "wb") as dst:
-                shutil.copyfileobj(source, dst)
-        else:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
-            fd = os.open(name, flags, 0o600, dir_fd=parent)
-            with os.fdopen(fd, "wb") as dst:
-                shutil.copyfileobj(source, dst)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
+        fd = os.open(name, flags, 0o600, dir_fd=parent)
+        with os.fdopen(fd, "wb") as dst:
+            shutil.copyfileobj(source, dst)
         try:
-            if parent is None:
-                root.joinpath(*parts).chmod(mode)
-            else:
-                os.chmod(name, mode, dir_fd=parent, follow_symlinks=False)
+            os.chmod(name, mode, dir_fd=parent, follow_symlinks=False)
         except (OSError, NotImplementedError):
             pass
     finally:
@@ -544,22 +548,14 @@ def _copy_within(
 
     parent = _walk_dirs(root, src_parts[:-1], create=False)
     try:
-        if parent is None:
-            src_path = root.joinpath(*src_parts)
-            if not src_path.is_file():
-                raise tarfile.TarError(
-                    f"hardlink {member.name!r} -> {member.linkname!r}: target not extracted"
-                )
-            handle = open(src_path, "rb")
-        else:
-            try:
-                fd = os.open(src_parts[-1], os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent)
-            except OSError as exc:
-                raise tarfile.TarError(
-                    f"hardlink {member.name!r} -> {member.linkname!r}: "
-                    f"cannot read target ({exc.strerror})"
-                ) from exc
-            handle = os.fdopen(fd, "rb")
+        try:
+            fd = os.open(src_parts[-1], os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent)
+        except OSError as exc:
+            raise tarfile.TarError(
+                f"hardlink {member.name!r} -> {member.linkname!r}: "
+                f"cannot read target ({exc.strerror})"
+            ) from exc
+        handle = os.fdopen(fd, "rb")
     finally:
         _close(parent)
 
