@@ -76,9 +76,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("base", type=Path, help="gitleaks JSON for the base revision")
     parser.add_argument("head", type=Path, help="gitleaks JSON for HEAD")
+    parser.add_argument(
+        "--extra-base",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="REPORT",
+        help=(
+            "additional base-side report, merged into the exemption multiset. "
+            "The caller scans deleted files into a separate tree, because a "
+            "file and a directory cannot share a name and an ordinary "
+            "file-to-package refactor otherwise collides. Their findings are "
+            "still base-side findings."
+        ),
+    )
     args = parser.parse_args(argv)
 
     base = load(args.base)
+    for extra in args.extra_base:
+        base.extend(load(extra))
     head = load(args.head)
 
     remaining = Counter(key(f) for f in base)

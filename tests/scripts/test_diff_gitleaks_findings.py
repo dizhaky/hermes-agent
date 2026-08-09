@@ -118,6 +118,56 @@ def test_non_list_report_fails_closed(tmp_path):
         mod.main([str(base), str(head)])
 
 
+class TestExtraBaseReports:
+    """Deleted files are scanned into their own tree, so they arrive separately.
+
+    A file and a directory cannot share a name, so materializing a deleted
+    blob alongside the added/modified ones breaks an ordinary file-to-package
+    refactor. The deleted tree is scanned on its own; its findings are still
+    base-side findings and must exempt the same way.
+    """
+
+    def test_a_value_only_in_the_extra_base_is_exempt(self, tmp_path):
+        base = _write(tmp_path, "b.json", [])
+        extra = _write(tmp_path, "d.json", [_finding("AAA", file="old.py")])
+        head = _write(tmp_path, "h.json", [_finding("AAA", file="new.py")])
+        assert mod.main([str(base), str(head), "--extra-base", str(extra)]) == 0
+
+    def test_without_the_extra_base_the_same_value_is_new(self, tmp_path):
+        """The control: it is the extra report doing the work, not the key."""
+        base = _write(tmp_path, "b.json", [])
+        head = _write(tmp_path, "h.json", [_finding("AAA", file="new.py")])
+        assert mod.main([str(base), str(head)]) == 1
+
+    def test_counts_from_both_reports_add_up(self, tmp_path):
+        base = _write(tmp_path, "b.json", [_finding("AAA")])
+        extra = _write(tmp_path, "d.json", [_finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
+        assert mod.main([str(base), str(head), "--extra-base", str(extra)]) == 0
+
+    def test_a_surplus_beyond_both_is_still_new(self, tmp_path):
+        base = _write(tmp_path, "b.json", [_finding("AAA")])
+        extra = _write(tmp_path, "d.json", [_finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA")] * 3)
+        assert mod.main([str(base), str(head), "--extra-base", str(extra)]) == 1
+
+    def test_several_extra_bases_are_all_merged(self, tmp_path):
+        base = _write(tmp_path, "b.json", [])
+        e1 = _write(tmp_path, "d1.json", [_finding("AAA")])
+        e2 = _write(tmp_path, "d2.json", [_finding("BBB")])
+        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("BBB")])
+        args = [str(base), str(head), "--extra-base", str(e1), "--extra-base", str(e2)]
+        assert mod.main(args) == 0
+
+    def test_an_unparseable_extra_base_fails_closed(self, tmp_path):
+        base = _write(tmp_path, "b.json", [])
+        extra = tmp_path / "d.json"
+        extra.write_text("not json", encoding="utf-8")
+        head = _write(tmp_path, "h.json", [])
+        with pytest.raises(SystemExit):
+            mod.main([str(base), str(head), "--extra-base", str(extra)])
+
+
 def test_secret_values_are_never_printed(tmp_path, capsys):
     secret = "sk-ant-api03-THIS-MUST-NOT-APPEAR"
     _run(tmp_path, [], [_finding(secret)])
