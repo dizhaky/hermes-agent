@@ -326,6 +326,44 @@ class TestHardlinksInRealSnapshots:
         assert a.stat().st_ino != b.stat().st_ino
 
 
+class TestDirectoryModesMatchTheStdlib:
+    """The two paths must agree on directory permissions.
+
+    ``filter="data"`` does **not** restore a directory's archived mode — a
+    0700 member comes out 0755. Verified against this interpreter, not assumed.
+    So the fallback does not restore it either: making the fallback stricter
+    would make a restored snapshot's permissions depend on the Python version,
+    which is the divergence this function exists to remove.
+    """
+
+    def _extract_private_dir(self, tmp_path, extract, dest_name):
+        dest = tmp_path / dest_name
+        dest.mkdir()
+        private = _dir("skills/private")
+        private.mode = 0o700
+        archive = _tar_with(
+            tmp_path / f"{dest_name}.tar.gz",
+            _dir("skills"),
+            private,
+            _file("skills/private/secret.md", size=5),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "skills" / "private" / "secret.md").is_file()
+        return (dest / "skills" / "private").stat().st_mode & 0o777
+
+    def test_both_paths_agree(self, tmp_path, extract):
+        """Whatever the mode ends up being, both paths must produce the same.
+
+        Parameterized over both, so a change in either direction — the stdlib
+        starting to preserve modes, or the fallback drifting — fails here.
+        """
+        mode = self._extract_private_dir(tmp_path, extract, "dest")
+        assert mode == 0o755, (
+            f"expected parity with filter='data' (0755), got {mode:04o}"
+        )
+
+
 class TestOrdinaryArchivesStillExtract:
     """The guard must not be safe by refusing everything."""
 

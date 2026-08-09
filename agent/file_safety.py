@@ -401,6 +401,14 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
         pass
 
     root = Path(dest)
+    # Directory modes are deliberately NOT restored, because ``filter="data"``
+    # does not restore them either: a 0700 directory comes out 0755 on the
+    # filtered path. Preserving them here would make the permissions of a
+    # restored snapshot depend on the interpreter, which is the divergence this
+    # whole function exists to remove. (That the stdlib widens a private
+    # directory at all is a real question, but it is the stdlib's answer on
+    # every supported version, not something to fix asymmetrically in the
+    # fallback.)
     for member in tar.getmembers():
         parts = _safe_member_parts(member.name)
 
