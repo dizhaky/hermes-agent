@@ -52,3 +52,30 @@ class TestStepFunRegionInference:
         The substring implementation this replaced never raised.
         """
         assert _infer_stepfun_region(url) == "international"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "api.stepfun.com//step_plan/v1",
+        "api.stepfun.com/path?next=//example",
+        "api.stepfun.com/a//b",
+    ],
+)
+def test_a_bare_host_whose_path_contains_a_double_slash(base_url):
+    """"//" anywhere is not evidence that an authority is already present.
+
+    The prefix was added only when the string contained no "//" at all, so a
+    bare host with a doubled slash further along was parsed entirely as a
+    path. `hostname` came back empty and a live China endpoint was reported as
+    international — which offers to rewrite the config to the .ai host.
+    """
+    assert _infer_stepfun_region(base_url) == "china"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["//api.stepfun.com/v1", "https://api.stepfun.com/v1", "api.stepfun.com"],
+)
+def test_authorities_already_present_are_left_alone(base_url):
+    assert _infer_stepfun_region(base_url) == "china"

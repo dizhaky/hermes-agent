@@ -175,3 +175,56 @@ def test_secret_values_are_never_printed(tmp_path, capsys):
     assert secret not in out.out
     assert secret not in out.err
     assert "a.py" in out.out and "anthropic-api-key" in out.out
+
+
+class TestAlternativeBaseSnapshots:
+    """The target tip and the previous branch head are *alternative* parents.
+
+    They describe the same paths at different revisions, so their counts must
+    be combined by maximum. Summing them exempts two copies of a value that
+    each parent holds only once — and a merge-only resolution that duplicates
+    a credential is exactly what the content pass exists to catch, so that
+    would pass silently.
+    """
+
+    def test_overlapping_parents_do_not_sum(self, tmp_path):
+        base = _write(tmp_path, "b.json", [_finding("AAA")])
+        alt = _write(tmp_path, "p.json", [_finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
+        assert mod.main([str(base), str(head), "--alt-base", str(alt)]) == 1
+
+    def test_summing_them_would_have_passed(self, tmp_path):
+        """The control: --extra-base on the same inputs exempts both copies."""
+        base = _write(tmp_path, "b.json", [_finding("AAA")])
+        alt = _write(tmp_path, "p.json", [_finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
+        assert mod.main([str(base), str(head), "--extra-base", str(alt)]) == 0
+
+    def test_the_larger_parent_wins(self, tmp_path):
+        base = _write(tmp_path, "b.json", [_finding("AAA")])
+        alt = _write(tmp_path, "p.json", [_finding("AAA"), _finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("AAA")])
+        assert mod.main([str(base), str(head), "--alt-base", str(alt)]) == 0
+
+    def test_a_value_only_the_alt_parent_has_is_exempt(self, tmp_path):
+        base = _write(tmp_path, "b.json", [])
+        alt = _write(tmp_path, "p.json", [_finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA")])
+        assert mod.main([str(base), str(head), "--alt-base", str(alt)]) == 0
+
+    def test_alt_and_extra_compose(self, tmp_path):
+        """Deleted-file slice adds; the previous head maxes."""
+        base = _write(tmp_path, "b.json", [_finding("AAA")])
+        deleted = _write(tmp_path, "d.json", [_finding("BBB")])
+        alt = _write(tmp_path, "p.json", [_finding("AAA")])
+        head = _write(tmp_path, "h.json", [_finding("AAA"), _finding("BBB")])
+        args = [str(base), str(head), "--extra-base", str(deleted), "--alt-base", str(alt)]
+        assert mod.main(args) == 0
+
+    def test_an_unparseable_alt_base_fails_closed(self, tmp_path):
+        base = _write(tmp_path, "b.json", [])
+        alt = tmp_path / "p.json"
+        alt.write_text("not json", encoding="utf-8")
+        head = _write(tmp_path, "h.json", [])
+        with pytest.raises(SystemExit):
+            mod.main([str(base), str(head), "--alt-base", str(alt)])

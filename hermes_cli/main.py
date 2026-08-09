@@ -4445,7 +4445,16 @@ def _infer_stepfun_region(base_url: str) -> str:
     from urllib.parse import urlparse
 
     normalized = (base_url or "").strip().lower()
-    if "//" not in normalized:
+    # A bare host needs "//" prepended so urlparse reads it as an authority
+    # rather than a path. Testing for "//" *anywhere* got that wrong: it also
+    # matched a double slash in the path or query, so
+    # "api.stepfun.com//step_plan/v1" was left unprefixed, parsed entirely as a
+    # path, and yielded an empty hostname — inferring "international" for a
+    # China endpoint and offering to rewrite it to the .ai host. Only a scheme
+    # or a leading "//" means an authority is already present.
+    if not re.match(r"^[a-z][a-z0-9+.-]*://", normalized) and not normalized.startswith(
+        "//"
+    ):
         normalized = f"//{normalized}"
     try:
         host = (urlparse(normalized).hostname or "").rstrip(".")

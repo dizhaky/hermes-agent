@@ -627,6 +627,31 @@ def _write_file(
         _close(parent)
 
 
+def _filter_destination_parts(name: str) -> "tuple[str, ...] | None":
+    """Where ``filter="data"`` will place ``name``, or ``None`` if it refuses.
+
+    Mirrors the filter's own normalization rather than this module's stricter
+    one. The filter strips leading slashes and only then checks for an escape,
+    so ``/.hub/x`` is extracted as ``.hub/x`` — while ``_safe_member_parts``
+    rejects it outright as absolute.
+
+    That mismatch was a hole. The pre-pass below used the strict rule, so a
+    member spelled ``/.hub/x`` was silently skipped as "extraction will reject
+    it" and then extracted anyway, straight through a preserved hardlink.
+    Reproduced: outside file overwritten, ``st_nlink`` still 2.
+
+    ``None`` means the filter will raise before writing anything, so there is
+    no hazard to clear.
+    """
+    stripped = name.lstrip("/")
+    if _is_absolute_path(stripped):
+        return None
+    parts = tuple(p for p in PurePosixPath(stripped).parts if p not in ("", "."))
+    if ".." in parts or not parts:
+        return None
+    return parts
+
+
 def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
     """Unlink destination leaves that would be written *through* rather than over.
 
@@ -642,22 +667,53 @@ def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
     ``curator_backup`` preserves ``skills/.hub`` across a rollback, so the
     destination is not a clean tree and either state can be present.
 
-    Deliberately **best-effort and non-blocking**: anything it cannot resolve
-    safely is skipped rather than raised on. ``_walk_dirs`` refuses to traverse
-    a symlinked directory, which is right for the fallback but would newly
-    break the stdlib path for *legitimate* symlinked skills —
-    ``agent/skill_utils.py`` supports those. So this only removes hazards it
-    can reach, and never turns a working restore into a failure.
+    **Nothing is modified until the whole archive has been looked at**, and a
+    member the filter will reject aborts *before* extraction rather than being
+    skipped past. Both halves matter, and the first attempt at this got the
+    second one wrong:
+
+    * Detaching for an archive that then fails validation destroys preserved
+      state for nothing — ``rollback()`` skips ``.hub`` during failure cleanup,
+      so it does not come back.
+    * But merely *cancelling* the pass and letting ``extractall`` run is worse,
+      not better. Members are extracted in order, so a crafted archive could
+      append one invalid member, disable this pass, and have the hardlink
+      truncated anyway before the filter noticed. Measured: outside file
+      ``PWNED``. Raising up front is the only option that leaves both the
+      destination and the preserved state untouched.
+
+    The two checks are deliberately no stricter than ``data`` itself, so this
+    never refuses an archive the filter would have accepted. Link *targets* are
+    not checked: ``data`` allows a contained ``../sibling``, and rejecting
+    those here would break the symlinked skills that round eight established
+    must round-trip.
+
+    Within that, still **best-effort**: a path it cannot resolve is left alone
+    rather than raised on. ``_walk_dirs`` refuses to traverse a symlinked
+    directory, which is right for the fallback but would newly break the stdlib
+    path for *legitimate* symlinked skills, which ``agent/skill_utils.py``
+    supports.
     """
+    import tarfile
+
     if not _HAVE_DIR_FD:
         return
+
+    targets: list[tuple[str, ...]] = []
     for member in tar.getmembers():
+        if member.isdir():
+            continue
         if not (member.isfile() or member.islnk() or member.issym()):
-            continue
-        try:
-            parts = _safe_member_parts(member.name)
-        except Exception:  # noqa: BLE001 - extraction will reject it properly
-            continue
+            raise tarfile.TarError(
+                f"refusing to extract non-regular member {member.name!r} "
+                f"(type {member.type!r})"
+            )
+        parts = _filter_destination_parts(member.name)
+        if parts is None:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
+        targets.append(parts)
+
+    for parts in targets:
         try:
             parent = _walk_dirs(root, parts[:-1], create=False)
         except Exception:  # noqa: BLE001 - nothing reachable to clean

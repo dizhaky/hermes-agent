@@ -287,6 +287,58 @@ class TestDestinationStateCannotRedirect:
             extract(tar, dest)
         assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
 
+    @pytest.mark.parametrize("hazard", ["hardlink", "symlink"])
+    def test_a_slash_prefixed_member_still_detaches(self, tmp_path, extract, hazard):
+        r"""The pre-pass must normalize names the way the *filter* does.
+
+        ``filter="data"`` strips a leading ``/`` and then checks for an escape,
+        so ``/.hub/x`` is extracted as ``.hub/x``. ``_safe_member_parts``
+        rejects it outright as absolute, so a pre-pass using the strict rule
+        skipped it as "extraction will reject this" — and extraction did not.
+        The hazard was then hit at full force.
+
+        The asserted property is that the outside file survives, not *how*.
+        The two paths legitimately differ here: the fallback refuses an
+        absolute member name outright, while the stdlib normalizes it and
+        extracts — so it has to detach first. Both are safe; only one of them
+        extracts.
+        """
+        outside, dest, _ = self._hazard_setup(tmp_path)
+        if hazard == "hardlink":
+            os.link(outside, dest / ".hub" / "x")
+        else:
+            (dest / ".hub" / "x").symlink_to(outside)
+        archive = _tar_with(tmp_path / "abs.tar.gz", _file("/.hub/x", size=5))
+        with tarfile.open(archive) as tar:
+            try:
+                extract(tar, dest)
+            except tarfile.TarError:
+                pass  # the fallback refuses absolute names; also safe
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_an_archive_the_filter_rejects_leaves_the_destination_alone(
+        self, tmp_path, extract
+    ):
+        """Detaching is destructive, so it must not happen for a doomed archive.
+
+        ``rollback()`` skips ``.hub`` during failure cleanup, so anything
+        unlinked here does not come back. Merely *skipping* the pass is not the
+        answer either — members extract in order, so an invalid member appended
+        after a valid one would disable the pass and let the hardlink be
+        truncated anyway. Both properties are asserted: the preserved entry
+        survives *and* the outside file is untouched.
+        """
+        outside, dest, _ = self._hazard_setup(tmp_path)
+        os.link(outside, dest / ".hub" / "x")
+        fifo = tarfile.TarInfo("skills/weird")
+        fifo.type = tarfile.FIFOTYPE
+        archive = _tar_with(tmp_path / "bad.tar.gz", _file(".hub/x", size=5), fifo)
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert outside.read_text() == "USER DATA\n"
+        assert (dest / ".hub" / "x").exists()
+
     def test_existing_symlink_in_destination_is_refused(self, tmp_path, extract):
         outside = tmp_path / "outside"
         outside.mkdir()

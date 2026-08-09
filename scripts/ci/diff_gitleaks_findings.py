@@ -83,11 +83,24 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         metavar="REPORT",
         help=(
-            "additional base-side report, merged into the exemption multiset. "
-            "The caller scans deleted files into a separate tree, because a "
-            "file and a directory cannot share a name and an ordinary "
-            "file-to-package refactor otherwise collides. Their findings are "
-            "still base-side findings."
+            "another slice of the SAME base snapshot, covering paths the main "
+            "report could not. Counts add, because the slices are disjoint: "
+            "deleted files are scanned into their own tree only because a file "
+            "and a directory cannot share a name."
+        ),
+    )
+    parser.add_argument(
+        "--alt-base",
+        type=Path,
+        action="append",
+        default=[],
+        metavar="REPORT",
+        help=(
+            "an ALTERNATIVE base snapshot of the same paths — the branch's "
+            "previous head alongside the target's tip. Counts are combined by "
+            "maximum, not by sum: the snapshots overlap, so adding them would "
+            "exempt two copies of a credential that each parent holds once, "
+            "and a merge resolution that duplicates it would pass."
         ),
     )
     args = parser.parse_args(argv)
@@ -97,7 +110,17 @@ def main(argv: list[str] | None = None) -> int:
         base.extend(load(extra))
     head = load(args.head)
 
+    # Within a snapshot, occurrences add. Across snapshots they do not: each is
+    # a complete account of the same paths at a different revision, so what is
+    # exempt is the most any single parent actually held.
     remaining = Counter(key(f) for f in base)
+    for alt in args.alt_base:
+        counts = Counter(key(f) for f in load(alt))
+        for k, n in counts.items():
+            if n > remaining[k]:
+                remaining[k] = n
+    exempt = sum(remaining.values())
+
     new = []
     for finding in head:
         k = key(finding)
@@ -113,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(
         f"content scan: {len(head)} finding(s) in changed files, "
-        f"{len(base)} already present at the base, {len(new)} new"
+        f"{exempt} already present at the base, {len(new)} new"
     )
     return 1 if new else 0
 
