@@ -688,6 +688,12 @@ def _filter_destination_parts(name: str) -> "tuple[str, ...] | None":
     ``None`` means the filter will raise before writing anything, so there is
     no hazard to clear.
     """
+    if "\x00" in name:
+        # `PurePosixPath` accepts an embedded NUL, every filesystem call
+        # rejects it — with `ValueError`, which is neither OSError nor
+        # TarError, so `rollback()` skipped recovery with the tree already
+        # staged. Treated as unextractable here so the refusal is a TarError.
+        return None
     stripped = name.lstrip("/")
     if _is_absolute_path(stripped):
         return None
@@ -711,7 +717,13 @@ def _top_level_names(name: str) -> "set[str]":
     for reading in (name, name.replace("\\", "/")):
         parts = _filter_destination_parts(reading)
         if parts:
-            names.add(parts[0])
+            # Casefolded because Windows and default macOS resolve `.HUB/x`
+            # onto the existing `.hub`, so a case-sensitive comparison missed
+            # it and the write landed in the preserved tree anyway. Folding
+            # unconditionally can only over-refuse, and only for an archive
+            # containing a differently-cased `.hub` — which is not a skill
+            # name, and refusing it costs nothing.
+            names.add(parts[0].casefold())
     return names
 
 
@@ -744,7 +756,8 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
     claimed: set[tuple[str, ...]] = set()
     for member in tar.getmembers():
         parts = _filter_destination_parts(member.name)
-        if parts is not None and refuse_top_level & _top_level_names(member.name):
+        folded_refused = {n.casefold() for n in refuse_top_level}
+        if parts is not None and folded_refused & _top_level_names(member.name):
             # Checked before the directory short-circuit below. A *directory*
             # member named `.hub/injected` skipped every check here and was
             # created inside the preserved tree, with rollback reporting
@@ -785,7 +798,13 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
                 f"path more than once"
             )
         claimed.add(parts)
-        if any(parts[: len(sym)] == sym for sym in symlinked):
+        readings = {parts}
+        win = _filter_destination_parts(member.name.replace("\\", "/"))
+        if win is not None:
+            readings.add(win)
+        if any(
+            reading[: len(sym)] == sym for reading in readings for sym in symlinked
+        ):
             # A symlink member changes what a later member's path means. Safe
             # to refuse: tar does not archive content underneath a symlink, so
             # `snapshot_skills()` never emits members below a symlink member.
@@ -807,9 +826,13 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
                     f"target is not an earlier regular-file member"
                 )
         if member.issym():
-            symlinked.add(parts)
+            # Both readings, because `tarfile` splits on `\\` when the host
+            # does: `a\\link -> ..\\.hub` then `a\\link\\x` recorded the symlink as
+            # the single component `a\link`, which is not a prefix of the
+            # single component `a\link\x`, so the redirect was not seen.
+            symlinked.update(readings)
         else:
-            seen_regular.add(parts)
+            seen_regular.update(readings)
 
 
 def _copy_within(

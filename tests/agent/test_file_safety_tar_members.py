@@ -950,3 +950,66 @@ class TestDuplicateMemberNames:
             extract(tar, dest)
         assert (dest / "skills" / "a.md").is_file()
         assert (dest / "skills" / "b.md").is_file()
+
+
+class TestSpellingsThatEvadeThePreservedNameCheck:
+    """The refusal must not depend on how a member spells a preserved path."""
+
+    def _hazard(self, tmp_path):
+        outside = tmp_path / "important.txt"
+        outside.write_text("USER DATA\n")
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        os.link(outside, dest / ".hub" / "x")
+        return outside, dest
+
+    @pytest.mark.parametrize("name", [".HUB/x", ".Hub/x"])
+    def test_a_differently_cased_preserved_name(self, tmp_path, extract, name):
+        """Windows and default macOS resolve `.HUB/x` onto the existing `.hub`.
+
+        Folding unconditionally can only over-refuse, and only for an archive
+        containing a differently-cased `.hub` — not a skill name.
+        """
+        outside, dest = self._hazard(tmp_path)
+        archive = _tar_with(tmp_path / "t.tar.gz", _file(name, size=5))
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_a_windows_spelled_symlink_ancestor(self, tmp_path, extract):
+        r"""``a\link -> ..\.hub`` then ``a\link\x``.
+
+        Recorded as the single component ``a\link``, which is not a prefix of
+        the single component ``a\link\x``, so the redirect went unseen. Both
+        separator readings are tracked now.
+        """
+        outside, dest = self._hazard(tmp_path)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _link("a\\link", "..\\.hub", hard=False),
+            _file("a\\link\\x", size=5),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert outside.read_text() == "USER DATA\n"
+
+
+def test_an_embedded_nul_in_a_long_path_is_refused(tmp_path, extract):
+    """`ValueError: embedded null byte` is neither OSError nor TarError.
+
+    `rollback()` catches only those two, so it escaped recovery with the tree
+    already staged. A short name would truncate at the NUL — it survives only
+    via PAX's length-prefixed long-path record, which is how this is built.
+    """
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    info = _file("demo/" + "a" * 120 + "\x00" + "b", size=1)
+    archive = tmp_path / "t.tar.gz"
+    with tarfile.open(archive, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        tar.addfile(info, io.BytesIO(b"x"))
+    with tarfile.open(archive) as tar:
+        assert "\x00" in tar.getmembers()[0].name  # the premise
+        with pytest.raises(tarfile.TarError):
+            extract(tar, dest)
