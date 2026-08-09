@@ -439,7 +439,7 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
         if extracted is None:
             raise tarfile.TarError(f"cannot read archive member {member.name!r}")
         with extracted:
-            _write_file(root, parts, extracted, member.mode & 0o777)
+            _write_file(root, parts, extracted, _data_filter_mode(member.mode))
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +560,27 @@ def _copy_within(
         _close(parent)
 
     with handle:
-        _write_file(root, dst_parts, handle, member.mode & 0o777)
+        _write_file(root, dst_parts, handle, _data_filter_mode(member.mode))
+
+
+def _data_filter_mode(mode: int) -> int:
+    """Sanitize a regular-file mode the way ``filter="data"`` does.
+
+    Mirrors ``tarfile._get_filtered_attrs`` for regular and hard-link members:
+    drop group/other write, clear *all* execute bits unless the owner had
+    execute, then guarantee owner read/write. Verified against the stdlib
+    across every mode in ``0o000``–``0o777``.
+
+    Applying the archived mode verbatim instead would restore a ``0777`` member
+    world-writable on 3.11.0–3.11.3 and ``0755`` everywhere else — executable
+    skill content editable by any local user, on those interpreters only.
+    (Directories are the opposite case and deliberately untouched: ``data``
+    ignores their modes entirely, so matching it means not restoring them.)
+    """
+    mode &= 0o755
+    if not mode & 0o100:
+        mode &= ~0o111
+    return mode | 0o600
 
 
 def _safe_member_parts(name: str) -> tuple[str, ...]:

@@ -26,6 +26,14 @@ and one whose value changed was — wherever it happens to sit. Keying on
 location would report every line shift and miss every in-place replacement,
 which is backwards on both counts.
 
+Counted as a multiset
+---------------------
+Occurrences are compared by count, not by set membership. A resolution that
+adds a *second* copy of a credential already present in the changed files
+leaves the key unchanged, so plain membership would exempt both copies and
+report nothing new. Only as many occurrences as existed at the base are
+exempt.
+
 Secrets are never printed. Only the path, line and rule of a new finding are
 reported; the reports themselves stay in the caller's temp dirs.
 """
@@ -35,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -72,8 +81,14 @@ def main(argv: list[str] | None = None) -> int:
     base = load(args.base)
     head = load(args.head)
 
-    known = {key(f) for f in base}
-    new = [f for f in head if key(f) not in known]
+    remaining = Counter(key(f) for f in base)
+    new = []
+    for finding in head:
+        k = key(finding)
+        if remaining[k] > 0:
+            remaining[k] -= 1
+            continue
+        new.append(finding)
 
     for finding in new:
         print(

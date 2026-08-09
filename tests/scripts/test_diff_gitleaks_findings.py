@@ -64,6 +64,30 @@ def test_added_secret_alongside_an_existing_one(tmp_path):
     assert _run(tmp_path, [_finding("AAA")], [_finding("AAA"), _finding("BBB")]) == 1
 
 
+def test_a_second_copy_of_an_existing_secret_is_new(tmp_path):
+    """Occurrences are counted, not merely matched.
+
+    A resolution that duplicates a credential already in the changed files
+    leaves the (rule, secret) key unchanged, so plain set membership would
+    exempt both copies and report nothing.
+    """
+    base = [_finding("AAA", line=1)]
+    head = [_finding("AAA", line=1), _finding("AAA", line=2)]
+    assert _run(tmp_path, base, head) == 1
+
+
+def test_matching_counts_are_all_exempt(tmp_path):
+    two = [_finding("AAA", line=1), _finding("AAA", line=2)]
+    assert _run(tmp_path, two, two) == 0
+
+
+def test_only_the_surplus_is_reported(tmp_path, capsys):
+    base = [_finding("AAA"), _finding("AAA")]
+    head = [_finding("AAA"), _finding("AAA"), _finding("AAA")]
+    assert _run(tmp_path, base, head) == 1
+    assert capsys.readouterr().out.count("secret introduced") == 1
+
+
 def test_removed_secret_is_not_a_failure(tmp_path):
     assert _run(tmp_path, [_finding("AAA"), _finding("BBB")], [_finding("AAA")]) == 0
 

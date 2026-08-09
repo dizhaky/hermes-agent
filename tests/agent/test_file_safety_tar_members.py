@@ -371,6 +371,45 @@ class TestPlatformsWithoutDirFdAreRefused:
         assert (dest / "skills" / "a.md").is_file()
 
 
+class TestFileModesMatchTheStdlib:
+    """Regular-file modes are sanitized exactly as ``filter="data"`` does.
+
+    Unlike directories — which ``data`` ignores — it *does* sanitize regular
+    files: drop group/other write, clear all execute bits unless the owner had
+    execute, then guarantee owner read/write. Applying the archived mode
+    verbatim restored a 0777 member world-writable on the fallback and 0755
+    everywhere else.
+    """
+
+    @pytest.mark.parametrize(
+        ("archived", "expected"),
+        [(0o777, 0o755), (0o666, 0o644), (0o755, 0o755),
+         (0o600, 0o600), (0o400, 0o600), (0o444, 0o644)],
+    )
+    def test_mode_is_sanitized(self, tmp_path, extract, archived, expected):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        info = _file("skills/a.md", size=3)
+        info.mode = archived
+        archive = _tar_with(tmp_path / "t.tar.gz", _dir("skills"), info)
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        got = (dest / "skills" / "a.md").stat().st_mode & 0o777
+        assert got == expected, f"{archived:04o} -> {got:04o}, expected {expected:04o}"
+
+    def test_helper_matches_the_stdlib_for_every_mode(self):
+        """Exhaustive rather than sampled — the rule is only 3 lines."""
+        for mode in range(0o1000):
+            sanitized = file_safety._data_filter_mode(mode)
+            expected = mode & 0o755
+            if not expected & 0o100:
+                expected &= ~0o111
+            expected |= 0o600
+            assert sanitized == expected, f"{mode:04o}"
+            assert not sanitized & 0o022, f"{mode:04o} left group/other write"
+            assert sanitized & 0o600 == 0o600, f"{mode:04o} lost owner rw"
+
+
 class TestDirectoryModesMatchTheStdlib:
     """The two paths must agree on directory permissions.
 
