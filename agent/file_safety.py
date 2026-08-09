@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import stat
+import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Optional
 
@@ -703,6 +704,28 @@ def _filter_destination_parts(name: str) -> "tuple[str, ...] | None":
     return parts
 
 
+def _caseless(part: str) -> str:
+    """One key for every spelling of ``part`` that names the same file.
+
+    Casefolding alone is not filesystem identity: macOS is normalization-
+    *insensitive*, so ``é`` composed (U+00E9) and ``e``+U+0301 decomposed are
+    one file there. A symlink spelled one way and a member spelled the other
+    resolve through each other while comparing as different strings.
+
+    One leading ``NFC`` pass is enough, and the order is the reason: ``NFC``
+    makes canonically-equivalent spellings *byte-identical*, so the casefold
+    that follows is applied to the same input and cannot diverge. Folding first
+    would not have that property — casefolding emits an unnormalized result for
+    26 code points, U+0390 among them. Checked exhaustively over the code-point
+    range: zero spellings disagree this way round.
+
+    ``NFC`` and not ``NFKC``: Apple's filesystems decompose canonically, so
+    canonical equivalence is the identity they implement. Compatibility folding
+    would additionally merge names the filesystem keeps apart.
+    """
+    return unicodedata.normalize("NFC", part).casefold()
+
+
 def _top_level_names(name: str) -> "set[str]":
     """Every first component this member could have, under either separator.
 
@@ -723,7 +746,7 @@ def _top_level_names(name: str) -> "set[str]":
             # unconditionally can only over-refuse, and only for an archive
             # containing a differently-cased `.hub` — which is not a skill
             # name, and refusing it costs nothing.
-            names.add(parts[0].casefold())
+            names.add(_caseless(parts[0]))
     return names
 
 
@@ -740,8 +763,9 @@ def _canonical_readings(name: str) -> "tuple[tuple[str, ...], ...]":
     readings: set[tuple[str, ...]] = set()
     for reading in (name, name.replace("\\", "/")):
         parts = _filter_destination_parts(reading)
-        if parts is not None:
-            readings.add(tuple(part.casefold() for part in parts))
+        if parts is None:
+            continue
+        readings.add(tuple(_caseless(part) for part in parts))
     return tuple(readings)
 
 
@@ -759,6 +783,12 @@ def _host_identity(name: str) -> "tuple[str, ...] | None":
 
     ``normcase`` is the right primitive for the case half for the same reason:
     it lowercases on Windows and is the identity on POSIX.
+
+    Unicode normalization is deliberately **not** applied here either, for the
+    third instance of the same reason: macOS treats the composed and decomposed
+    spellings of a name as one file, Linux treats them as two, and folding them
+    together for identity would refuse a legitimate archive containing both.
+    The refusal side folds them; this side does not.
     """
     reading = name.replace("\\", "/") if os.sep == "\\" or os.altsep == "\\" else name
     parts = _filter_destination_parts(reading)
@@ -793,7 +823,7 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
     """
     import tarfile
 
-    folded_refused = {n.casefold() for n in refuse_top_level}
+    folded_refused = {_caseless(n) for n in refuse_top_level}
     seen_regular: set[tuple[str, ...]] = set()
     symlinked: set[tuple[str, ...]] = set()
     claimed: set[tuple[str, ...]] = set()

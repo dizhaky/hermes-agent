@@ -30,6 +30,12 @@ from agent.file_safety import safe_extract_tar
 # filter runs, so force the manual path too and assert both are safe.
 FORCE_MANUAL = [False, True]
 
+# The two Unicode spellings of the same rendered name, written as escapes so no
+# editor or formatter can silently normalize one into the other and leave the
+# tests below asserting nothing. One filename on macOS, two on Linux.
+NFC = "\u00e9"
+NFD = "e\u0301"
+
 
 @pytest.fixture(params=FORCE_MANUAL, ids=["stdlib-filter", "manual-fallback"])
 def extract(request, monkeypatch):
@@ -1085,3 +1091,42 @@ class TestNormalizationIsAppliedUniformly:
         )
         with tarfile.open(archive) as tar:
             extract(tar, dest)
+
+    def test_a_unicode_differing_symlink_ancestor(self, tmp_path, extract):
+        """``é -> .hub`` composed, then ``é/x`` decomposed.
+
+        macOS is normalization-*insensitive*: U+00E9 and U+0065 U+0301 name one
+        file there, so the member resolves through the symlink while the two
+        component tuples compare as different. Casefolding alone is not
+        filesystem identity.
+        """
+        outside, dest = self._hazard(tmp_path)
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _link(NFC, ".hub", hard=False),
+            _file(NFD + "/x", size=5),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_unicode_identity_still_uses_the_host_semantics(self, tmp_path, extract):
+        """The control for the rule above, and the same distinction again.
+
+        Linux stores the two spellings as two files. Folding them for
+        *identity* would call this legitimate archive a duplicate-destination
+        collision and refuse it. The refusal side folds; this side does not.
+        """
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _file("demo/" + NFC, size=2),
+            _file("demo/" + NFD, size=3),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "demo" / NFC).is_file()
+        assert (dest / "demo" / NFD).is_file()
