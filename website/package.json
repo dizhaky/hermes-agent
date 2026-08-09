@@ -36,7 +36,7 @@
     "typescript": "6.0.3"
   },
   "overrides": {
-    "js-yaml": "4.3.0",
+    "js-yaml": "4.3.1",
     "brace-expansion": "1.1.18",
     "fast-uri": "3.1.5",
     "serialize-javascript": "7.0.5",
@@ -70,7 +70,8 @@
     "@docusaurus/utils-common": "3.10.2",
     "@docusaurus/utils-validation": "3.10.2",
     "postcss": "8.5.23",
-    "undici": "7.29.0"
+    "undici": "7.29.0",
+    "nanoid": "3.3.17"
   },
   "browserslist": {
     "production": [
