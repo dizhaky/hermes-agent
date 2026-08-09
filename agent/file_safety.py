@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Optional
 
@@ -392,6 +393,11 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     """
     import tarfile
 
+    # The stdlib filter has the same hardlink hole, and unlike the fallback it
+    # is the path that actually runs on every supported interpreter, so the
+    # hazards are cleared out of the destination before handing over.
+    _detach_unsafe_destinations(tar, Path(dest))
+
     try:
         tar.extractall(dest, filter="data")  # type: ignore[call-arg]
         return
@@ -592,7 +598,19 @@ def _write_file(
     parent = _walk_dirs(root, parts[:-1], create=True)
     name = parts[-1]
     try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _O_NOFOLLOW
+        # Unlink first, then create exclusively, rather than opening the
+        # existing file with O_TRUNC. O_NOFOLLOW rejects a *symlink* at this
+        # path, but a hardlink is not a link to a file — it is the file, so
+        # O_NOFOLLOW says nothing about it. curator_backup preserves
+        # `skills/.hub` across a rollback, so a hardlink already sitting there
+        # and pointing at something outside the tree would have had that
+        # outside file truncated and overwritten in place. Reproduced before
+        # this changed. Replacing the name detaches it from the shared inode.
+        try:
+            os.unlink(name, dir_fd=parent)
+        except (FileNotFoundError, IsADirectoryError, PermissionError):
+            pass
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW
         fd = os.open(name, flags, 0o600, dir_fd=parent)
         with os.fdopen(fd, "wb") as dst:
             shutil.copyfileobj(source, dst)
@@ -607,6 +625,53 @@ def _write_file(
                 pass
     finally:
         _close(parent)
+
+
+def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
+    """Unlink destination leaves that would be written *through* rather than over.
+
+    Two states in an existing destination make an ordinary regular member
+    dangerous, and neither involves a link member in the archive:
+
+    * a **hardlink** — the same inode under another name, possibly outside the
+      tree. ``O_NOFOLLOW`` does not help: a hardlink is the file, not a
+      reference to it, so opening it with ``O_TRUNC`` destroys the other name's
+      content. Verified against both extraction paths.
+    * a **symlink** at the leaf — the stdlib writes through it.
+
+    ``curator_backup`` preserves ``skills/.hub`` across a rollback, so the
+    destination is not a clean tree and either state can be present.
+
+    Deliberately **best-effort and non-blocking**: anything it cannot resolve
+    safely is skipped rather than raised on. ``_walk_dirs`` refuses to traverse
+    a symlinked directory, which is right for the fallback but would newly
+    break the stdlib path for *legitimate* symlinked skills —
+    ``agent/skill_utils.py`` supports those. So this only removes hazards it
+    can reach, and never turns a working restore into a failure.
+    """
+    if not _HAVE_DIR_FD:
+        return
+    for member in tar.getmembers():
+        if not (member.isfile() or member.islnk() or member.issym()):
+            continue
+        try:
+            parts = _safe_member_parts(member.name)
+        except Exception:  # noqa: BLE001 - extraction will reject it properly
+            continue
+        try:
+            parent = _walk_dirs(root, parts[:-1], create=False)
+        except Exception:  # noqa: BLE001 - nothing reachable to clean
+            continue
+        try:
+            info = os.lstat(parts[-1], dir_fd=parent)
+            if stat.S_ISLNK(info.st_mode) or (
+                stat.S_ISREG(info.st_mode) and info.st_nlink > 1
+            ):
+                os.unlink(parts[-1], dir_fd=parent)
+        except OSError:
+            pass
+        finally:
+            _close(parent)
 
 
 def _copy_within(

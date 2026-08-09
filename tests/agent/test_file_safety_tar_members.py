@@ -245,6 +245,48 @@ class TestDestinationStateCannotRedirect:
     member in the archive is required.
     """
 
+    def _hazard_setup(self, tmp_path):
+        outside = tmp_path / "important.txt"
+        outside.write_text("USER DATA\n")
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        archive = _tar_with(tmp_path / "t.tar.gz", _file(".hub/x", size=5))
+        return outside, dest, archive
+
+    def test_an_existing_hardlink_leaf_is_replaced_not_truncated(self, tmp_path, extract):
+        """A hardlink is the file, not a reference to it.
+
+        ``O_NOFOLLOW`` rejects a symlink at the leaf and says nothing about a
+        hardlink, so opening it with ``O_TRUNC`` overwrote whatever else shared
+        that inode — a user file outside the skills tree, reachable because
+        ``curator_backup`` preserves ``.hub``. Both extraction paths did it.
+        """
+        outside, dest, archive = self._hazard_setup(tmp_path)
+        os.link(outside, dest / ".hub" / "x")
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert outside.read_text() == "USER DATA\n"
+        assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
+        assert outside.stat().st_nlink == 1
+
+    def test_an_existing_symlink_leaf_is_not_written_through(self, tmp_path, extract):
+        """Same class at the leaf rather than a path component."""
+        outside, dest, archive = self._hazard_setup(tmp_path)
+        (dest / ".hub" / "x").symlink_to(outside)
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert outside.read_text() == "USER DATA\n"
+        assert not (dest / ".hub" / "x").is_symlink()
+        assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
+
+    def test_an_ordinary_existing_file_is_still_overwritten(self, tmp_path, extract):
+        """The control: replacing content must keep working."""
+        _, dest, archive = self._hazard_setup(tmp_path)
+        (dest / ".hub" / "x").write_text("stale")
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / ".hub" / "x").read_bytes() == b"x" * 5
+
     def test_existing_symlink_in_destination_is_refused(self, tmp_path, extract):
         outside = tmp_path / "outside"
         outside.mkdir()
