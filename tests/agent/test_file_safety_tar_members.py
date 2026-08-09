@@ -562,6 +562,35 @@ class TestMtimesMatchTheStdlib:
     than just metadata.
     """
 
+    def test_a_hardlinked_sibling_keeps_its_mtime(self, tmp_path, extract):
+        """The copy must carry the archived time, like the regular-file path.
+
+        tarfile.add() stores a repeated inode as LNKTYPE, so in a real snapshot
+        the second of two hardlinked files takes the copy path — and would
+        otherwise restore stamped "now" while its twin kept 2000-01-01.
+        """
+        archived = 946684800
+        skills = tmp_path / "skills" / "demo"
+        skills.mkdir(parents=True)
+        (skills / "a.txt").write_text("content\n")
+        os.link(skills / "a.txt", skills / "b.txt")
+        os.utime(skills / "a.txt", (archived, archived))
+
+        archive = tmp_path / "snap.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for entry in sorted((tmp_path / "skills").iterdir()):
+                tar.add(str(entry), arcname=entry.name, recursive=True)
+        with tarfile.open(archive) as tar:
+            assert any(m.islnk() for m in tar.getmembers())
+
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        for name in ("a.txt", "b.txt"):
+            got = int((dest / "demo" / name).stat().st_mtime)
+            assert got == archived, f"{name} restored with mtime {got}"
+
     def test_file_and_directory_mtimes_are_preserved(self, tmp_path, extract):
         archived = 946684800  # 2000-01-01
         dest = tmp_path / "dest"

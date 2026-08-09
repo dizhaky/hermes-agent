@@ -609,7 +609,9 @@ def _copy_within(
         _close(parent)
 
     with handle:
-        _write_file(root, dst_parts, handle, _data_filter_mode(member.mode))
+        _write_file(
+            root, dst_parts, handle, _data_filter_mode(member.mode), int(member.mtime)
+        )
 
 
 def _is_absolute_path(value: str) -> bool:
