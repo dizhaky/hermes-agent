@@ -559,7 +559,13 @@ def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> int:
         for part in parts:
             if create:
                 try:
-                    os.mkdir(part, 0o755, dir_fd=fd)
+                    # No explicit mode: `filter="data"` clears the archived
+                    # directory mode and lets `os.mkdir`'s default 0777 meet
+                    # the process umask. Hard-coding 0755 here matched that
+                    # only under umask 022 — under 002 the stdlib gives 0775
+                    # and this gave 0755, so a group-shared skills tree lost
+                    # group write depending on the interpreter's patch level.
+                    os.mkdir(part, dir_fd=fd)
                 except FileExistsError:
                     pass
             try:

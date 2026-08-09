@@ -413,12 +413,23 @@ class TestFileModesMatchTheStdlib:
 class TestDirectoryModesMatchTheStdlib:
     """The two paths must agree on directory permissions.
 
-    ``filter="data"`` does **not** restore a directory's archived mode — a
-    0700 member comes out 0755. Verified against this interpreter, not assumed.
-    So the fallback does not restore it either: making the fallback stricter
-    would make a restored snapshot's permissions depend on the Python version,
-    which is the divergence this function exists to remove.
+    ``filter="data"`` does **not** restore a directory's archived mode: it
+    creates the directory with ``os.mkdir``'s default 0777 and lets the
+    process umask decide. So the fallback must not restore it either — but it
+    must also not *hard-code* the result.
+
+    An earlier version of this test asserted a bare ``0o755``, and the
+    fallback hard-coded ``os.mkdir(part, 0o755)`` to match. Both were only
+    right under umask 022, where ``0777 & ~022`` happens to be 0755. Under
+    umask 002 the stdlib yields 0775 and the fallback still gave 0755, so a
+    group-shared skills tree silently lost group write depending on the Python
+    patch version. The expectation is therefore computed from the umask rather
+    than written down.
     """
+
+    @staticmethod
+    def _expected(umask: int) -> int:
+        return 0o777 & ~umask
 
     def _extract_private_dir(self, tmp_path, extract, dest_name):
         dest = tmp_path / dest_name
@@ -436,15 +447,23 @@ class TestDirectoryModesMatchTheStdlib:
         assert (dest / "skills" / "private" / "secret.md").is_file()
         return (dest / "skills" / "private").stat().st_mode & 0o777
 
-    def test_both_paths_agree(self, tmp_path, extract):
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX umask semantics")
+    @pytest.mark.parametrize("umask", [0o022, 0o002, 0o000, 0o077])
+    def test_both_paths_agree_under_any_umask(self, tmp_path, extract, umask):
         """Whatever the mode ends up being, both paths must produce the same.
 
-        Parameterized over both, so a change in either direction — the stdlib
-        starting to preserve modes, or the fallback drifting — fails here.
+        Parameterized over both extraction paths *and* several umasks, so a
+        drift in either direction fails here — including the one a single
+        umask cannot see.
         """
-        mode = self._extract_private_dir(tmp_path, extract, "dest")
-        assert mode == 0o755, (
-            f"expected parity with filter='data' (0755), got {mode:04o}"
+        previous = os.umask(umask)
+        try:
+            mode = self._extract_private_dir(tmp_path, extract, "dest")
+        finally:
+            os.umask(previous)
+        assert mode == self._expected(umask), (
+            f"under umask {umask:04o} expected parity with filter='data' "
+            f"({self._expected(umask):04o}), got {mode:04o}"
         )
 
 
