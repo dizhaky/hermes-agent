@@ -375,12 +375,20 @@ def safe_extract_tar(tar: "tarfile.TarFile", dest: "Path | str") -> None:
     ``..\\outside`` and ``C:\\outside`` are escapes there while looking like
     one opaque component to ``PurePosixPath``.
 
-    **Deliberately stricter than ``data`` in one respect:** ``data`` permits a
-    symlink whose target stays inside the tree, and this refuses every link
-    member. Supporting them safely means resolving through links already
-    created — the complexity that produced all three bypasses above. The
-    affected window is 3.11.0–3.11.3 only; on 3.11.4+ the real filter runs and
-    internal links are still allowed.
+    **How link members are handled, and why the two kinds differ.** Symlinks
+    are refused outright: honouring one safely means resolving through links
+    already created, which is the complexity that produced the bypasses above.
+    Hardlinks are *materialized as copies* instead — ``tarfile.add()`` stores
+    the second occurrence of an inode as a ``LNKTYPE`` member, so an ordinary
+    snapshot of a skills tree containing hardlinks has them, and refusing those
+    would make a backup unrestorable on exactly the interpreters this serves.
+    A copy carries the same content and, unlike a link, cannot be used to reach
+    anything else.
+
+    So this is stricter than ``data`` for symlinks (``data`` allows a contained
+    one) and equivalent for everything else. The divergence applies to
+    3.11.0–3.11.3 only; on 3.11.4+ the real filter runs and a contained symlink
+    is restored as a symlink.
     """
     import tarfile
 
