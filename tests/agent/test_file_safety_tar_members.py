@@ -492,6 +492,61 @@ class TestOrdinaryArchivesStillExtract:
         assert sum(1 for p in dest.rglob("*") if p.is_file()) > 0
 
 
+class TestLiteralBackslashNamesMatchTheStdlib:
+    r"""A backslash is a legal POSIX filename character, not a separator.
+
+    Refusing Windows-style *escapes* is right — ``..\outside.txt`` is pinned
+    above. But the fallback implemented that by rewriting every ``\`` to ``/``
+    before splitting, which is not a refusal at all: it silently relocated the
+    file. ``demo/a\b`` and ``demo/a/b`` both resolved to ``demo/a/b``, so one
+    snapshot entry overwrote the other and a rollback lost a file without
+    saying so.
+
+    The stdlib is the oracle here, as everywhere else in this module: on POSIX
+    ``filter="data"`` keeps the two distinct, so the fallback must too.
+    """
+
+    @pytest.mark.skipif(os.sep != "/", reason="POSIX-only filename semantics")
+    def test_a_backslash_name_is_not_a_directory_separator(self, tmp_path, extract):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _file(r"demo/a\b", size=5),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "demo" / "a\\b").is_file()
+        assert not (dest / "demo" / "a").is_dir()
+
+    @pytest.mark.skipif(os.sep != "/", reason="POSIX-only filename semantics")
+    def test_a_backslash_name_does_not_collide_with_a_nested_one(self, tmp_path, extract):
+        """The data-loss case: two distinct entries, two distinct files."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("demo"),
+            _file(r"demo/a\b", size=5),
+            _dir("demo/a"),
+            _file("demo/a/b", size=9),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "demo" / "a\\b").stat().st_size == 5
+        assert (dest / "demo" / "a" / "b").stat().st_size == 9
+
+    @pytest.mark.skipif(os.sep != "/", reason="POSIX-only filename semantics")
+    def test_escapes_written_with_backslashes_are_still_refused(self, tmp_path, extract):
+        r"""Preserving a literal ``\`` must not reopen the Windows escapes."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(tmp_path / "t.tar.gz", _file(r"..\outside.txt"))
+        _extract_expecting_containment(extract, archive, dest)
+        _nothing_outside(tmp_path, dest)
+
+
 class TestContainedSymlinksRoundTrip:
     """Both paths restore a contained symlink, and neither restores an escape.
 

@@ -525,9 +525,23 @@ def _walk_dirs(root: "Path", parts: "tuple[str, ...]", *, create: bool) -> int:
     The combination this refuses is narrow: an interpreter old enough to lack
     ``filter="data"`` (3.11.0–3.11.3) *and* a platform without ``dir_fd``
     support (Windows). On 3.11.4+ the real filter runs and this is never
-    reached. Refusing to restore a backup is a poor outcome; restoring it
-    through a directory junction that redirects outside the tree is a worse
-    one, and upgrading to 3.11.4 resolves it.
+    reached.
+
+    Stated more sharply than the first version of this comment managed: on
+    that combination **every** curator rollback fails before restoring its
+    first entry, and ``requires-python = ">=3.11,<3.14"`` still advertises it
+    as supported. That is a real gap, not a rounding error, and the honest fix
+    is to floor ``requires-python`` at ``3.11.4`` so the package stops claiming
+    a configuration it cannot serve. Left undone here only because this
+    environment's ``uv`` cannot parse the repo's ``uv.lock`` schema, so the
+    lockfile cannot be regenerated and ``uv lock --check`` would fail CI —
+    tracked as a follow-up rather than shipped broken.
+
+    The alternative — hand-rolling reparse-point checks for Windows — is
+    deliberately not taken. It would be security-critical code for a platform
+    this sandbox cannot execute, and every hand-rolled containment scheme in
+    this module's history has been bypassed. Refusing is verifiable; a second
+    unverified guard is not.
     """
     import tarfile
 
@@ -700,20 +714,39 @@ def _data_filter_mode(mode: int) -> int:
 def _safe_member_parts(name: str) -> tuple[str, ...]:
     """Split a stored member name, refusing anything that escapes.
 
-    Checked under POSIX *and* Windows rules: ``extractall`` builds its
-    destination with ``os.path``, which on Windows also treats ``\\`` as a
-    separator and honours drive letters, so a name that is one opaque component
-    to ``PurePosixPath`` can be a multi-component escape there. Refusing a
-    filename that genuinely contains a backslash (legal on POSIX, vanishingly
-    rare) is the conservative direction here.
+    Two separate questions, and conflating them lost data.
+
+    *Validation* is done under POSIX **and** Windows rules, because
+    ``extractall`` builds its destination with ``os.path``, which on Windows
+    also treats ``\\`` as a separator and honours drive letters — so a name
+    that is one opaque component to ``PurePosixPath`` can be a
+    multi-component escape there. An escape under either reading is refused
+    everywhere: the archive decides, not the host.
+
+    *Splitting* is done under the host's rules only. This used to rewrite every
+    ``\\`` to ``/`` before splitting and the docstring called that "refusing" a
+    backslash filename — it was nothing of the kind. A backslash is a legal
+    POSIX filename character, so ``demo/a\\b`` was silently **relocated** to
+    ``demo/a/b``; given a snapshot holding both, one entry overwrote the other
+    and a rollback lost a file without reporting anything. ``filter="data"``
+    keeps the two distinct on POSIX, so the fallback does now as well.
     """
     import tarfile
 
     if _is_absolute_path(name):
         raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
 
-    parts = tuple(p for p in PurePosixPath(name.replace("\\", "/")).parts if p not in ("", "."))
-    if ".." in parts or not parts:
+    # Validate: refuse a traversal expressed with either separator.
+    for reading in (name, name.replace("\\", "/")):
+        if ".." in PurePosixPath(reading).parts:
+            raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
+
+    # Split: on Windows ``\`` really is a separator, so honour it there and
+    # only there. Nothing is written on that platform without ``dir_fd``
+    # support (see ``_walk_dirs``), but the split must still be correct.
+    split_on = name.replace("\\", "/") if os.sep == "\\" or os.altsep == "\\" else name
+    parts = tuple(p for p in PurePosixPath(split_on).parts if p not in ("", "."))
+    if not parts:
         raise tarfile.TarError(f"refusing to extract unsafe path: {name!r}")
     return parts
 
