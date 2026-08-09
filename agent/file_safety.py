@@ -741,8 +741,19 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
 
     seen_regular: set[tuple[str, ...]] = set()
     symlinked: set[tuple[str, ...]] = set()
+    claimed: set[tuple[str, ...]] = set()
     for member in tar.getmembers():
         parts = _filter_destination_parts(member.name)
+        if parts is not None and refuse_top_level & _top_level_names(member.name):
+            # Checked before the directory short-circuit below. A *directory*
+            # member named `.hub/injected` skipped every check here and was
+            # created inside the preserved tree, with rollback reporting
+            # success — mutating hub-managed state it is supposed to leave
+            # alone.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: it names a directory that "
+                f"is preserved across a restore and never part of a snapshot"
+            )
         if not _representable_mtime(member.mtime):
             # Checked before the directory short-circuit below. `data` applies
             # directory attributes *after* the members, so an out-of-range
@@ -762,11 +773,18 @@ def _validate_members(tar: "tarfile.TarFile", refuse_top_level: "frozenset[str]"
             )
         if parts is None:
             raise tarfile.TarError(f"refusing to extract unsafe path: {member.name!r}")
-        if refuse_top_level & _top_level_names(member.name):
+        if parts in claimed:
+            # A name written twice invalidates anything already concluded about
+            # it. Regular `a`, then a symlink also named `a`, then hardlink
+            # `b -> a`: `a` was a regular file when the hardlink was checked and
+            # a symlink by the time it was used. Rather than track provenance
+            # through replacement, duplicates are refused — `tarfile.add()`
+            # walks a tree once, so a real snapshot never contains one.
             raise tarfile.TarError(
-                f"refusing to extract {member.name!r}: it names a directory that "
-                f"is preserved across a restore and never part of a snapshot"
+                f"refusing to extract {member.name!r}: the archive writes this "
+                f"path more than once"
             )
+        claimed.add(parts)
         if any(parts[: len(sym)] == sym for sym in symlinked):
             # A symlink member changes what a later member's path means. Safe
             # to refuse: tar does not archive content underneath a symlink, so

@@ -884,3 +884,69 @@ def test_a_directory_timestamp_is_validated_too(tmp_path, extract):
     with tarfile.open(archive) as tar:
         with pytest.raises(tarfile.TarError):
             extract(tar, dest)
+
+
+class TestDirectoryMembersAreValidatedToo:
+    """Directories short-circuited the validator and skipped every check."""
+
+    def test_a_directory_inside_the_preserved_tree_is_refused(self, tmp_path, extract):
+        """`.hub/injected` was created, and rollback reported success.
+
+        Nothing was written *through* it, so none of the redirect tests caught
+        it — but curator rollback is not supposed to touch hub-managed state at
+        all, and a directory member is enough to mutate it.
+        """
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        directory = _dir(".hub/injected")
+        archive = _tar_with(tmp_path / "t.tar.gz", directory)
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert not (dest / ".hub" / "injected").exists()
+
+
+class TestDuplicateMemberNames:
+    """A name written twice invalidates anything concluded about it."""
+
+    def test_a_replaced_member_cannot_launder_a_hardlink(self, tmp_path, extract):
+        """Regular ``a``, then a symlink also named ``a``, then ``b -> a``.
+
+        ``a`` was a regular file when the hardlink was validated and a symlink
+        by the time extraction used it, so a source-type check alone could not
+        hold. Refusing duplicates removes the possibility rather than tracking
+        provenance through replacement.
+        """
+        outside = tmp_path / "important.txt"
+        outside.write_text("USER DATA\n")
+        dest = tmp_path / "skills"
+        (dest / ".hub").mkdir(parents=True)
+        os.link(outside, dest / ".hub" / "x")
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _file("a", size=1),
+            _link("a", ".hub/x", hard=False),
+            _link("b", "a", hard=True),
+            _file("b", size=5),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest, refuse_top_level=PRESERVED)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_an_archive_without_duplicates_is_unaffected(self, tmp_path, extract):
+        """The control — and `test_a_real_archive_of_repo_content` covers the
+        same ground against a tarball built from real files, which is what
+        would catch this rule being too strict for ordinary snapshots."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "t.tar.gz",
+            _dir("skills"),
+            _file("skills/a.md", size=3),
+            _file("skills/b.md", size=3),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "skills" / "a.md").is_file()
+        assert (dest / "skills" / "b.md").is_file()
