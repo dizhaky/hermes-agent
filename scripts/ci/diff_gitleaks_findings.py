@@ -50,6 +50,19 @@ in the target tip and the branch's previous head, and treating those as two
 occurrences inflated the exemption enough for a merge resolution to slip a
 genuinely new copy past. A line shift is not a second secret.
 
+This is a chosen error direction, not a solved problem. Two parents each
+holding one occurrence of a value in one file, with HEAD holding two, is
+ambiguous: it is either one inherited occurrence plus one the merge added, or
+two inherited occurrences that were always distinct. Nothing in the reports
+separates those — they differ only in whether HEAD's lines happen to coincide
+with the parents', and a rule keyed on that coincidence reports the *moved*
+secret above, which is the reason this comparison is content-keyed at all.
+Given the ambiguity the exemption is kept tight, so the failure mode is a
+merge push failing on a credential both parents already had, rather than a
+merge resolution slipping a real one through. Recovering from the first costs
+a glance at a diff-scoped report; the second is what this pass exists to
+prevent.
+
 Secrets are never printed. Only the path, line and rule of a new finding are
 reported; the reports themselves stay in the caller's temp dirs.
 """
