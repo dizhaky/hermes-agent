@@ -381,6 +381,46 @@ class TestDestinationStateCannotRedirect:
         assert not (dest / "stolen.txt").exists()
         assert (dest / ".hub" / "secret.txt").read_text() == "HUB STATE\n"
 
+    def test_a_symlink_member_cannot_redirect_a_later_member(self, tmp_path, extract):
+        """Round six's bypass, reappearing inside the pre-pass.
+
+        A pass over member metadata cannot know where a member will land,
+        because an earlier member can change what a later path means. With
+        ``a -> .hub`` followed by ``a/x``, nothing named ``a`` exists when the
+        pre-pass looks; ``extractall`` then creates the symlink and writes
+        through it onto the preserved hardlink. Reproduced — the outside inode
+        came back holding the archived bytes.
+
+        Refusing is decidable from the members alone and cannot reject a real
+        snapshot: tar does not archive content underneath a symlink, so
+        ``snapshot_skills()`` never emits members below a symlink member.
+        """
+        outside, dest, _ = self._hazard_setup(tmp_path)
+        os.link(outside, dest / ".hub" / "x")
+        archive = _tar_with(
+            tmp_path / "redirect.tar.gz",
+            _link("a", ".hub", hard=False),
+            _file("a/x", size=5),
+        )
+        with tarfile.open(archive) as tar:
+            with pytest.raises(tarfile.TarError):
+                extract(tar, dest)
+        assert outside.read_text() == "USER DATA\n"
+
+    def test_a_symlink_member_with_no_members_under_it_is_fine(self, tmp_path, extract):
+        """The control: an ordinary symlinked skill must still restore."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = _tar_with(
+            tmp_path / "ok.tar.gz",
+            _dir("skills"),
+            _file("skills/real.md", size=4),
+            _link("skills/alias.md", "real.md", hard=False),
+        )
+        with tarfile.open(archive) as tar:
+            extract(tar, dest)
+        assert (dest / "skills" / "alias.md").is_symlink()
+
     def test_existing_symlink_in_destination_is_refused(self, tmp_path, extract):
         outside = tmp_path / "outside"
         outside.mkdir()

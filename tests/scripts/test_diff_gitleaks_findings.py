@@ -175,6 +175,23 @@ class TestSeveralBaseSideReports:
     Unioning over (rule, secret, file, line) does both jobs.
     """
 
+    def test_a_line_shift_between_parents_is_not_a_second_occurrence(self, tmp_path):
+        """Reconciliation is per file, not per line.
+
+        The same inherited credential routinely sits at different lines in the
+        target tip and the branch's previous head. Counting those as two
+        occurrences inflated the exemption enough for a merge resolution to
+        slip a genuinely new copy past.
+        """
+        base = _write(tmp_path, "b.json", [_finding("AAA", file="a.py", line=2)])
+        prev = _write(tmp_path, "p.json", [_finding("AAA", file="a.py", line=3)])
+        head = _write(
+            tmp_path,
+            "h.json",
+            [_finding("AAA", file="a.py", line=3), _finding("AAA", file="a.py", line=9)],
+        )
+        assert mod.main([str(base), str(head), "--extra-base", str(prev)]) == 1
+
     def test_the_same_occurrence_in_two_parents_counts_once(self, tmp_path):
         """Summing would exempt two copies; a merge duplicating one must fail."""
         base = _write(tmp_path, "b.json", [_finding("AAA", file="a.py", line=1)])

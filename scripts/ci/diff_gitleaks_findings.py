@@ -41,7 +41,14 @@ files it could not put in the same tree, and the branch's previous head. Those
 are not independent tallies. Location is *not* part of the head-vs-base key —
 a secret that merely moved was not introduced — but it is exactly what
 distinguishes one occurrence from another *between parents*, so the reports
-are unioned over ``(rule, secret, file, line)`` before being counted.
+are reconciled per ``(rule, secret, file)`` — count within a report, take the
+largest across reports, then sum over files.
+
+The **file**, not the line. Including the line looked more precise and was
+less correct: the same inherited credential routinely sits at different lines
+in the target tip and the branch's previous head, and treating those as two
+occurrences inflated the exemption enough for a merge resolution to slip a
+genuinely new copy past. A line shift is not a second secret.
 
 Secrets are never printed. Only the path, line and rule of a new finding are
 reported; the reports themselves stay in the caller's temp dirs.
@@ -125,13 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     merged: Counter = Counter()
     for report in reports:
         for spot, n in Counter(
-            (key(f), str(f.get("File", "")), f.get("StartLine")) for f in report
+            (key(f), str(f.get("File", ""))) for f in report
         ).items():
             if n > merged[spot]:
                 merged[spot] = n
 
     remaining: Counter = Counter()
-    for (k, _file, _line), n in merged.items():
+    for (k, _file), n in merged.items():
         remaining[k] += n
     exempt = sum(remaining.values())
 

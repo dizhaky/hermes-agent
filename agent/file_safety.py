@@ -738,6 +738,7 @@ def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
 
     targets: list[tuple[str, ...]] = []
     seen: set[tuple[str, ...]] = set()
+    symlinked: set[tuple[str, ...]] = set()
     for member in tar.getmembers():
         parts = _filter_destination_parts(member.name)
         if member.isdir():
@@ -776,6 +777,23 @@ def _detach_unsafe_destinations(tar: "tarfile.TarFile", root: "Path") -> None:
                     f"refusing hardlink {member.name!r} -> {member.linkname!r}: "
                     f"target is not an earlier member of this archive"
                 )
+        if member.issym():
+            symlinked.add(parts)
+        elif any(parts[: len(sym)] == sym for sym in symlinked):
+            # Round six, in a new place. A pre-pass over member metadata cannot
+            # know where a member will land, because an *earlier* member can
+            # change what a later path means: `a -> .hub` followed by `a/x`
+            # resolves onto the preserved hardlink after this pass has already
+            # finished looking. Reproduced — the outside inode came back
+            # holding the archived bytes.
+            #
+            # Refusing is decidable here and cannot reject a real snapshot: tar
+            # does not archive content *underneath* a symlink, so
+            # `snapshot_skills()` never emits members below a symlink member.
+            raise tarfile.TarError(
+                f"refusing to extract {member.name!r}: it resolves through the "
+                f"symlink member {'/'.join(next(sym for sym in symlinked if parts[: len(sym)] == sym))!r}"
+            )
         seen.add(parts)
         targets.append(parts)
 
@@ -818,9 +836,23 @@ def _detach_leaf(root: "Path", parts: "tuple[str, ...]") -> None:
     for part in parts[:-1]:
         current = current / part
         try:
-            if os.path.islink(current) or not os.path.isdir(current):
-                return  # redirected or absent: nothing safely reachable
+            info = os.lstat(current)
         except OSError:
+            return
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            return  # redirected or absent: nothing safely reachable
+        # `os.path.islink()` is False for a Windows directory *junction* while
+        # `os.path.isdir()` follows it, so the first version of this walk
+        # descended through one and then unlinked an entry outside the tree —
+        # the replacement doing the damage the early return had merely allowed.
+        # `lstat` does not follow, and a reparse point is identified by its tag.
+        tag = getattr(info, "st_reparse_tag", None)
+        if tag:
+            return
+        if tag is None and os.name == "nt":
+            # The attribute should exist on Windows (3.8+). If it does not,
+            # junctions cannot be distinguished from directories here, and this
+            # walk is about to delete things — so stop rather than guess.
             return
     leaf = current / parts[-1]
     try:
