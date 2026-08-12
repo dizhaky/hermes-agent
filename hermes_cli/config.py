@@ -3743,7 +3743,9 @@ def _config_flock(exclusive: bool):
     handle = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(lock_path, "a+")
+        # Binary: the file is a lock handle, never read or written as text,
+        # so there is no encoding to get wrong.
+        handle = open(lock_path, "ab+")
     except OSError:
         yield
         return
