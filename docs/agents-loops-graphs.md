@@ -118,11 +118,13 @@ consecutive failures; a job broken by a rotated credential fails quietly
 forever. This is the root of the standing "Infrastructure Health & Alerts"
 noise and the open cron-cleanup/health-check Linear projects.
 
-**Build:** track `consecutive_failures` in the job record in
-`cron/scheduler.py`; after N (default 3), auto-pause the job and deliver one
-escalation (Slack + Linear issue via the existing delivery path) instead of
-per-tick failure spam. Mirror of Kanban's existing `failure_limit` semantics
-— the pattern is already in the codebase, just not in cron.
+**Built (this branch):** `mark_job_run` in `cron/jobs.py` now tracks
+`consecutive_failures` per job; after N in a row (per-job `failure_limit` >
+`HERMES_CRON_FAILURE_LIMIT` env > default 3, `0` disables) a recurring job
+is auto-paused, and the scheduler folds the auto-pause notice into the final
+failure delivery — one escalation instead of per-tick spam. `resume`,
+`trigger`, and any success reset the streak; one-shots are exempt. Mirrors
+Kanban's existing `failure_limit` semantics.
 
 ### Gap 2 — Cron outputs have no pass/fail gate
 
