@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "allow": [
+      "mcp__github__*",
+      "mcp__claude-code-remote__*",
+      "mcp__Unified_Gateway__*",
+      "mcp__Linear__*"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
