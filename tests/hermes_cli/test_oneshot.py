@@ -84,12 +84,21 @@ class TestRunOneshot:
 
 
 class TestRunAgentSkillsWiring:
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     @patch("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build")
     @patch("hermes_cli.oneshot._create_session_db_for_oneshot")
     @patch("run_agent.AIAgent")
     def test_run_agent_injects_ephemeral_system_prompt_when_skills_provided(
-        self, mock_ai_agent_cls, mock_session_db, mock_mcp
+        self, mock_ai_agent_cls, mock_session_db, mock_mcp, mock_runtime
     ):
+        mock_runtime.return_value = {
+            "api_key": "test-key",
+            "provider": "mock",
+            "base_url": None,
+            "requested_provider": None,
+            "api_mode": None,
+            "credential_pool": None,
+        }
         mock_agent_instance = MagicMock()
         mock_agent_instance.run_conversation.return_value = {
             "final_response": "done",
