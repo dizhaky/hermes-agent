@@ -1584,8 +1584,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         origin_thread = origin.get("thread_id")
         if origin_thread and not thread_id:
             same_conversation = (
-                platform_name == origin.get("platform")
-                and chat_id == origin.get("chat_id")
+                str(origin.get("platform", "")).lower() == str(platform_name).lower()
+                and str(origin.get("chat_id", "")) == str(chat_id)
             )
             if same_conversation:
                 logger.warning(
