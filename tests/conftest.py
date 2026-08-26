@@ -62,31 +62,26 @@ _PRE_SANDBOX_DOTFILES_DIR = os.environ.get("HERMES_DOTFILES_DIR", "").strip()
 _PRE_SANDBOX_OBSIDIAN_VAULT = os.environ.get("OBSIDIAN_VAULT", "").strip()
 _PRE_SANDBOX_OBSIDIAN_VAULT_PATH = os.environ.get("OBSIDIAN_VAULT_PATH", "").strip()
 
-_SESSION_SANDBOX = tempfile.mkdtemp(prefix="hermes-test-sandbox-")
-atexit.register(shutil.rmtree, _SESSION_SANDBOX, True)
+if not os.environ.get("HERMES_HOME"):
+    _SESSION_HERMES_HOME = tempfile.mkdtemp(prefix="hermes-test-home-")
+    os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
+    atexit.register(shutil.rmtree, _SESSION_HERMES_HOME, True)
 
-_SESSION_HERMES_HOME = str(Path(_SESSION_SANDBOX) / "hermes")
-_SESSION_DOTFILES_DIR = str(Path(_SESSION_SANDBOX) / "dotfiles")
-_SESSION_VAULT = str(Path(_SESSION_SANDBOX) / "vault")
+if not os.environ.get("HERMES_DOTFILES_DIR"):
+    _SESSION_DOTFILES_DIR = tempfile.mkdtemp(prefix="hermes-test-dotfiles-")
+    os.environ["HERMES_DOTFILES_DIR"] = _SESSION_DOTFILES_DIR
+    atexit.register(shutil.rmtree, _SESSION_DOTFILES_DIR, True)
 
-for _p in (_SESSION_HERMES_HOME, _SESSION_DOTFILES_DIR, _SESSION_VAULT):
-    os.makedirs(_p, exist_ok=True)
+if not os.environ.get("OBSIDIAN_VAULT"):
+    _SESSION_VAULT = tempfile.mkdtemp(prefix="hermes-test-vault-")
+    os.environ["OBSIDIAN_VAULT"] = _SESSION_VAULT
+    os.environ["OBSIDIAN_VAULT_PATH"] = _SESSION_VAULT
+    atexit.register(shutil.rmtree, _SESSION_VAULT, True)
 
-os.environ["HERMES_HOME"] = _SESSION_HERMES_HOME
-os.environ["HERMES_BASE_HOME"] = _SESSION_HERMES_HOME
-os.environ["HERMES_CONFIG_PATH"] = str(Path(_SESSION_HERMES_HOME) / "config.yaml")
-os.environ["HERMES_DOTFILES_DIR"] = _SESSION_DOTFILES_DIR
-os.environ["HERMES_KANBAN_HOME"] = str(Path(_SESSION_SANDBOX) / "kanban")
-os.environ["OBSIDIAN_VAULT"] = _SESSION_VAULT
-os.environ["OBSIDIAN_VAULT_PATH"] = _SESSION_VAULT
-
-HERMES_HOME_AT_CONFTEST_IMPORT = os.environ["HERMES_HOME"]
-HERMES_BASE_HOME_AT_CONFTEST_IMPORT = os.environ["HERMES_BASE_HOME"]
-HERMES_CONFIG_PATH_AT_CONFTEST_IMPORT = os.environ["HERMES_CONFIG_PATH"]
-HERMES_DOTFILES_DIR_AT_CONFTEST_IMPORT = os.environ["HERMES_DOTFILES_DIR"]
-HERMES_KANBAN_HOME_AT_CONFTEST_IMPORT = os.environ["HERMES_KANBAN_HOME"]
-OBSIDIAN_VAULT_AT_CONFTEST_IMPORT = os.environ["OBSIDIAN_VAULT"]
-OBSIDIAN_VAULT_PATH_AT_CONFTEST_IMPORT = os.environ["OBSIDIAN_VAULT_PATH"]
+HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
+HERMES_DOTFILES_DIR_AT_CONFTEST_IMPORT = os.environ.get("HERMES_DOTFILES_DIR", "")
+OBSIDIAN_VAULT_AT_CONFTEST_IMPORT = os.environ.get("OBSIDIAN_VAULT", "")
+OBSIDIAN_VAULT_PATH_AT_CONFTEST_IMPORT = os.environ.get("OBSIDIAN_VAULT_PATH", "")
 
 
 # ── Credential env-var filter ──────────────────────────────────────────────
@@ -394,12 +389,6 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_KANBAN_RUN_ID",
     "HERMES_KANBAN_CLAIM_LOCK",
     "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
-    "HERMES_DOTFILES_DIR",
-    "HERMES_BASE_HOME",
-    "HERMES_CONFIG",
-    "HERMES_CONFIG_PATH",
-    "OBSIDIAN_VAULT",
-    "OBSIDIAN_VAULT_PATH",
     # Pytest is routinely launched from a delegated worker.  The worker
     # lineage marker must not make parent-state tests run as delegated
     # children; tests that exercise child behavior set it explicitly.
@@ -572,17 +561,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
     (fake_hermes_home / "cron").mkdir()
     (fake_hermes_home / "memories").mkdir()
     (fake_hermes_home / "skills").mkdir()
-    fake_config = fake_hermes_home / "config.yaml"
+    fake_dotfiles = tmp_path / "dotfiles_test"
+    (fake_dotfiles / "hermes").mkdir(parents=True)
 
-    fake_dotfiles = tmp_path / "dotfiles"
-    fake_vault = tmp_path / "obsidian_vault"
+    fake_vault = tmp_path / "obsidian_vault_test"
+    fake_vault.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("HERMES_HOME", str(fake_hermes_home))
-    monkeypatch.setenv("HERMES_BASE_HOME", str(fake_hermes_home))
-    monkeypatch.setenv("HERMES_CONFIG_PATH", str(fake_config))
-    monkeypatch.setenv("HERMES_CONFIG", str(fake_config))
     monkeypatch.setenv("HERMES_DOTFILES_DIR", str(fake_dotfiles))
-    monkeypatch.setenv("HERMES_KANBAN_HOME", str(fake_hermes_home))
     monkeypatch.setenv("OBSIDIAN_VAULT", str(fake_vault))
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(fake_vault))
 

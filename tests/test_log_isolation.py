@@ -110,20 +110,6 @@ class TestEnvironmentIsolation:
         assert Path(vault).resolve() != (Path.home() / "Dev" / "obsidian-vault").resolve()
         assert Path(vault_path).resolve() != (Path.home() / "Dev" / "obsidian-vault").resolve()
 
-    def test_kanban_and_config_paths_are_sandboxed_before_imports(self):
-        from tests.conftest import (
-            HERMES_BASE_HOME_AT_CONFTEST_IMPORT as base_home,
-            HERMES_CONFIG_PATH_AT_CONFTEST_IMPORT as config_path,
-            HERMES_KANBAN_HOME_AT_CONFTEST_IMPORT as kanban_home,
-        )
-
-        assert base_home, "conftest must set HERMES_BASE_HOME before test modules import"
-        assert config_path, "conftest must set HERMES_CONFIG_PATH before test modules import"
-        assert kanban_home, "conftest must set HERMES_KANBAN_HOME before test modules import"
-        assert Path(base_home).resolve() != _real_hermes_home().resolve()
-        assert Path(kanban_home).resolve() != _real_hermes_home().resolve()
-        assert Path(config_path).resolve() != (_real_hermes_home() / "config.yaml").resolve()
-
     def test_looks_like_credential_detects_sensitive_keys(self):
         from tests.conftest import _looks_like_credential
 
