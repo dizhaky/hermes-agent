@@ -2677,7 +2677,13 @@ def _is_unresolved_secret_ref(raw: str) -> bool:
     guards the case where we cannot possibly have produced the new value by
     expanding the template, AND the reference names a credential.
     """
-    names = re.findall(r"\${([^}]+)}", raw)
+    # `[^${}]+` rather than `[^}]+`: excluding `$` and `{` makes the match
+    # linear. With `[^}]+` a crafted string of many repeated `${` prefixes
+    # backtracks polynomially (CodeQL py/polynomial-redos). Config values are
+    # not attacker-controlled today, but this runs on every save and the
+    # narrower class costs nothing -- a legitimate ${VAR} name contains
+    # neither character.
+    names = re.findall(r"\${([^${}]+)}", raw)
     if not names:
         return False
     secretish = re.compile(
@@ -2724,7 +2730,7 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
         # referenced credential var is unset, so no expansion of `raw` could
         # ever equal `current`. When the var IS set, replacing the template is
         # a deliberate edit (pasting a new API key) and still wins.
-        if current.strip() and not re.search(r"\${[^}]+}", current) and _is_unresolved_secret_ref(raw):
+        if current.strip() and not re.search(r"\${[^${}]+}", current) and _is_unresolved_secret_ref(raw):
             return raw
         return current
 
