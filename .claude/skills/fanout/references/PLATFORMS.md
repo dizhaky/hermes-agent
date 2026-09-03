@@ -17,8 +17,9 @@ inference.
 | Claude Code | Yes | Yes | `Agent` tool, N calls in one message |
 | Cursor | Yes | Yes | Task tool, N calls in one message |
 | Antigravity | Yes | Yes (tier) | `invoke_subagent` |
-| Codex CLI | Reads `.codex/agents/` | — | Not verified — see Degradation |
-| Copilot / Devin Desktop | Not verified | — | See Degradation |
+| Codex CLI | Reads `.codex/agents/` | — | Not verified — use herdr |
+| Copilot / Devin Desktop | Not verified | — | Use herdr |
+| **herdr** (from any tool) | Yes — one pane per unit | Yes (`--model`) | `scripts/herdr-fanout run UNIT.md...` |
 
 ---
 
@@ -168,11 +169,61 @@ Workflows are separate again: Markdown, invoked as `/workflow-name`, same
 
 ---
 
+## herdr — panes as workers, from any tool
+
+[herdr](https://herdr.dev) is a terminal multiplexer built for coding agents:
+a background server owns the agent terminals, every pane reports
+`idle` / `working` / `blocked`, and a unix-socket JSON API drives it. It runs
+as a login service (`brew services start herdr`; DAN-3236) and works from any
+tool that can run a shell — including tools with no subagent primitive, and
+unattended runs where the dispatching session may not outlive the workers.
+
+`scripts/herdr-fanout` implements Phases 2–3 on it:
+
+```bash
+# Phase 2 — one worker per unit file, all started before any wait
+scripts/herdr-fanout run --cwd "$PWD" --out ./fanout-out \
+    --accept-startup unit-1.md unit-2.md unit-3.md
+# Phase 3 — one Opus skeptic over fanout-out/*.md → fanout-out/review.md
+scripts/herdr-fanout skeptic --out ./fanout-out
+```
+
+- **Unit file = the worker prompt.** The script prepends the worker contract
+  (findings, not narration; write to `--out/<unit>.md`; never ask) and pastes it
+  into a fresh `claude --model sonnet --permission-mode acceptEdits` pane
+  (skeptic: `--model opus`). `--kind codex|grok|…` and `--agent-args` override.
+- **The findings file is the completion signal**, not herdr's lifecycle state.
+  herdr's `idle`/`done` can flicker for a moment right after a pasted prompt
+  (observed with Claude Code 2.1.236 on 2026-09-01), so the script waits on
+  the file and uses herdr only for `blocked` and timeouts.
+- **Completeness gate is built in.** The run prints
+  `expected=N actual=M blocked=B` and exits non-zero on any gap. A blocked
+  pane is reported with its screen tail (the approval or question it is
+  waiting on); the workspace is kept open so you can answer it —
+  `herdr agent send-keys <unit> <keys>` — or attach with `herdr` and look.
+  Never auto-answer a permission dialog from the dispatcher.
+- `--accept-startup` presses Enter once on a *startup* dialog only (Claude
+  Code's project MCP-server trust prompt). It never touches a mid-run dialog.
+- **Writers need isolation.** `--cwd` sets every worker's directory; point
+  writing units at a worktree (`herdr worktree create` or `git worktree add`),
+  never at a shared checkout.
+- Model routing still applies: workers Sonnet, skeptic Opus. The synthesis
+  (Phase 4) stays in the dispatching session.
+- Wall-clock is the slowest unit; a 2-unit read-only run measured 2m42s.
+
+Skip herdr when the tool already has a native parallel primitive *and* the
+session will outlive the workers — the `Agent` tool is cheaper to drive.
+Reach for it when workers must survive the session, when you need to inspect
+or unblock a worker mid-run, or when the tool has no subagents at all.
+
+---
+
 ## Degradation — tools without parallel subagents
 
-If your tool has **no** parallel-subagent primitive, do not run the phases
-serially and still call it a fan-out; the wall-clock benefit is the reason the
-pattern exists. Pick one:
+If your tool has **no** parallel-subagent primitive, use the herdr adapter
+above first — it is the tool-neutral fan-out. Only without herdr (no server,
+no shell) do not run the phases serially and still call it a fan-out; the
+wall-clock benefit is the reason the pattern exists. Pick one:
 
 1. **Human-parallel.** Open N agent sessions/tabs yourself, paste one unit
    prompt into each, then paste the combined output back into one session for

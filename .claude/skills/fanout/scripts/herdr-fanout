@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# herdr-fanout — run the fanout diamond on herdr panes (DAN-3236).
+#
+# herdr (https://herdr.dev) owns the agent terminals: workers survive the
+# dispatching session, every pane reports idle/working/blocked, and a blocked
+# worker is reported with its screen instead of hanging the run. Works from
+# any tool that can run a shell — Claude Code, Grok, Codex, Hermes, cron.
+#
+#   herdr-fanout run     [opts] UNIT.md...   one worker per unit file, in parallel
+#   herdr-fanout skeptic [opts]              one Opus skeptic over --out/*.md → review.md
+#   herdr-fanout status  LABEL               agents + states in a run's workspace
+#   herdr-fanout close   LABEL               close a run's workspace
+#
+# Options (run / skeptic):
+#   --kind K          agent kind: claude (default), codex, grok, ...
+#   --model M         claude: sonnet for run (default), opus for skeptic
+#   --cwd DIR         working directory for every worker (default: $PWD)
+#   --out DIR         findings directory (default: ./fanout-out)
+#   --label L         workspace label (default: fanout-<timestamp>)
+#   --timeout MS      per-worker settle timeout (default: 900000 = 15 min)
+#   --agent-args "…"  extra CLI args for the agent binary
+#                     (claude default: --permission-mode acceptEdits)
+#   --accept-startup  press Enter once on a startup dialog (e.g. MCP trust)
+#   --keep            keep the workspace open after a clean run
+#
+# Each worker is told to WRITE its findings to $OUT/<unit>.md and stop. The
+# run reports expected vs actual files and every blocked pane, and exits
+# non-zero on any gap — a silent node failure must never look like a result.
+# Workers that must write to the repo belong in a worktree: --cwd <worktree>.
+set -euo pipefail
+
+die() { echo "herdr-fanout: $*" >&2; exit 2; }
+need() { command -v "$1" >/dev/null 2>&1 || die "missing $1"; }
+need herdr; need python3
+
+# jget EXPR  — evaluate a python expression against JSON on stdin (as `j`).
+jget() { python3 -c 'import sys,json; j=json.load(sys.stdin); print('"$1"')'; }
+
+KIND=claude MODEL="" CWD="$PWD" OUT="$PWD/fanout-out" LABEL="" TIMEOUT=900000
+AGENT_ARGS="" ACCEPT_STARTUP=0 KEEP=0
+CMD="${1:-}"
+case "$CMD" in
+  ""|-h|--help) sed -n '2,29p' "$0"; [ -n "$CMD" ] && exit 0 || exit 2 ;;
+esac
+shift
+UNITS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --kind) KIND="$2"; shift 2 ;;
+    --model) MODEL="$2"; shift 2 ;;
+    --cwd) CWD="$(cd "$2" && pwd)"; shift 2 ;;
+    --out) OUT="$2"; shift 2 ;;
+    --label) LABEL="$2"; shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --agent-args) AGENT_ARGS="$2"; shift 2 ;;
+    --accept-startup) ACCEPT_STARTUP=1; shift ;;
+    --keep) KEEP=1; shift ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    --*) die "unknown option $1" ;;
+    *) UNITS+=("$1"); shift ;;
+  esac
+done
+mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
+
+server_up() {
+  herdr status server 2>/dev/null | grep -q 'status: running' \
+    || die "herdr server not running — start it: brew services start herdr"
+}
+
+# agent_args KIND MODEL — per-kind defaults; --agent-args always appended.
+agent_args() {
+  local a=""
+  if [ "$1" = claude ]; then
+    [ -n "$2" ] && a="--model $2"
+    [ -n "$AGENT_ARGS" ] || a="$a --permission-mode acceptEdits"
+  fi
+  echo "$a $AGENT_ARGS"
+}
+
+ws_id() { herdr workspace list | jget \
+  '" ".join(w["workspace_id"] for w in j["result"]["workspaces"] if w.get("label")=="'"$1"'")'; }
+
+# start_worker NAME PANE PROMPTFILE OUTFILE — start agent, prompt without
+# waiting. Prints "ok" or "blocked:<reason>" so the caller keeps going.
+start_worker() {
+  local name="$1" pane="$2" pfile="$3" ofile="$4" res code
+  # shellcheck disable=SC2046  # word-splitting of agent args is intended
+  res="$(herdr agent start "$name" --kind "$KIND" --pane "$pane" --timeout 60000 \
+        -- $(agent_args "$KIND" "$MODEL") 2>&1 || true)"
+  code="$(printf '%s' "$res" | jget 'j.get("error",{}).get("code","")' 2>/dev/null || echo parse)"
+  if [ "$code" = agent_not_ready ] && [ "$ACCEPT_STARTUP" = 1 ]; then
+    herdr agent send-keys "$name" Enter >/dev/null
+    res="$(herdr agent wait "$name" --until idle --timeout 30000 2>&1 || true)"
+    code="$(printf '%s' "$res" | jget 'j.get("error",{}).get("code","")' 2>/dev/null || echo parse)"
+  fi
+  [ -z "$code" ] || { echo "blocked:start:$code"; return 0; }
+  local prompt
+  prompt="FANOUT WORKER \"$name\". You work alone and cannot see other units.
+Deliverable: write your FINDINGS (not narration, not a plan) to $ofile with
+the Write tool, then stop. Do not ask questions; if something blocks you,
+write the blocker into that file instead. Search the web if the unit needs
+current data.
+---
+$(cat "$pfile")"
+  res="$(herdr agent prompt "$name" "$prompt" 2>&1 || true)"
+  code="$(printf '%s' "$res" | jget 'j.get("error",{}).get("code","")' 2>/dev/null || echo parse)"
+  [ -z "$code" ] || { echo "blocked:prompt:$code"; return 0; }
+  # A pasted prompt takes a moment to submit; the later settle-wait would
+  # match the still-idle pane and report "done" before the turn even began.
+  # Confirm the turn started before returning.
+  if herdr agent wait "$name" --until working --timeout 20000 >/dev/null 2>&1; then
+    echo ok
+  else
+    echo "blocked:prompt:not_started"
+  fi
+}
+
+agent_status() {
+  herdr agent get "$1" 2>/dev/null | jget 'j["result"]["agent"]["agent_status"]' 2>/dev/null || echo unknown
+}
+
+# await_findings NAME OUTFILE — the findings file is the completion signal.
+# herdr's idle/done can flicker for a moment right after a pasted prompt
+# (observed 2026-09-01 with Claude Code 2.1.236), so a single settle-wait
+# is not trusted. Prints: done | blocked | finished_without_findings | timeout
+await_findings() {
+  local name="$1" ofile="$2" deadline settled_at="" st now
+  deadline=$(( $(date +%s) + TIMEOUT / 1000 ))
+  while :; do
+    [ -s "$ofile" ] && { echo "done"; return 0; }
+    now=$(date +%s)
+    [ "$now" -lt "$deadline" ] || { echo timeout; return 0; }
+    st="$(agent_status "$name")"
+    case "$st" in
+      blocked) echo blocked; return 0 ;;
+      idle|done)
+        [ -n "$settled_at" ] || settled_at=$now
+        # settled for 60s with no file: the worker finished without writing.
+        [ $((now - settled_at)) -lt 60 ] || { echo finished_without_findings; return 0; }
+        ;;
+      *) settled_at="" ;;
+    esac
+    # Sleep on herdr's event stream when possible; poll otherwise.
+    herdr agent wait "$name" --until blocked --timeout 5000 >/dev/null 2>&1 || true
+  done
+}
+
+# run_units LABEL NAME:PROMPTFILE...  — the diamond's parallel layer.
+run_units() {
+  local label="$1"; shift
+  server_up
+  local created ws pane n=0 i name pfile ofile state
+  local names=() panes=() states=()
+  created="$(herdr workspace create --label "$label" --cwd "$CWD" --no-focus)"
+  ws="$(printf '%s' "$created" | jget 'j["result"]["workspace"]["workspace_id"]')"
+  pane="$(printf '%s' "$created" | jget 'j["result"]["root_pane"]["pane_id"]')"
+  echo "workspace $ws ($label) cwd=$CWD out=$OUT"
+  for spec in "$@"; do
+    name="${spec%%:*}"; pfile="${spec#*:}"; ofile="$OUT/$name.md"
+    rm -f "$ofile"
+    if [ "$n" -gt 0 ]; then
+      pane="$(herdr tab create --workspace "$ws" --cwd "$CWD" --label "$name" \
+              | jget 'j["result"]["root_pane"]["pane_id"]')"
+    fi
+    state="$(start_worker "$name" "$pane" "$pfile" "$ofile")"
+    echo "  $name -> $pane : $state"
+    names+=("$name"); panes+=("$pane"); states+=("$state"); n=$((n+1))
+  done
+
+  # Wait for each; all are already working, so wall-clock ≈ slowest unit.
+  local actual=0 blocked=0 status summary="$OUT/summary.txt"
+  : > "$summary"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    name="${names[$i]}"; ofile="$OUT/$name.md"; state="${states[$i]}"
+    if [ "$state" = ok ]; then
+      status="$(await_findings "$name" "$ofile")"
+    else
+      status="$state"
+    fi
+    if [ -s "$ofile" ] && [ "$status" != blocked ]; then
+      actual=$((actual+1)); echo "OK      $name (${panes[$i]}) $status -> $ofile" >> "$summary"
+    else
+      [ "$status" = blocked ] || [ "${status#blocked}" != "$status" ] && blocked=$((blocked+1))
+      herdr agent read "$name" --source recent-unwrapped --lines 400 > "$OUT/$name.terminal.txt" 2>&1 || true
+      {
+        echo "MISSING $name (${panes[$i]}) $status — no findings file; screen tail:"
+        herdr agent read "$name" --source visible 2>/dev/null | grep -v '^[[:space:]]*$' | tail -8 | sed 's/^/    /'
+      } >> "$summary"
+    fi
+    i=$((i+1))
+  done
+  echo "expected=$n actual=$actual blocked=$blocked" | tee -a "$summary"
+  cat "$summary" | grep -v '^expected=' || true
+  if [ "$actual" -eq "$n" ] && [ "$blocked" -eq 0 ]; then
+    [ "$KEEP" = 1 ] || herdr workspace close "$ws" >/dev/null
+    return 0
+  fi
+  echo "run incomplete — workspace $ws kept. Inspect: herdr (attach), or" >&2
+  echo "  herdr agent read <name> --source visible; answer: herdr agent send-keys <name> <keys>" >&2
+  return 1
+}
+
+case "$CMD" in
+  run)
+    [ "${#UNITS[@]}" -ge 1 ] || die "run needs at least one UNIT.md"
+    [ -n "$MODEL" ] || MODEL=sonnet
+    [ -n "$LABEL" ] || LABEL="fanout-$(date +%Y%m%d-%H%M%S)"
+    specs=()
+    for u in "${UNITS[@]}"; do
+      [ -f "$u" ] || die "unit file not found: $u"
+      b="$(basename "$u")"; b="${b%.*}"
+      specs+=("$b:$(cd "$(dirname "$u")" && pwd)/$(basename "$u")")
+    done
+    run_units "$LABEL" "${specs[@]}"
+    ;;
+  skeptic)
+    [ -n "$MODEL" ] || MODEL=opus
+    [ -n "$LABEL" ] || LABEL="skeptic-$(date +%Y%m%d-%H%M%S)"
+    files=()
+    for f in "$OUT"/*.md; do
+      case "$f" in */review.md|*/summary.md) ;; *) [ -f "$f" ] && files+=("$f") ;; esac
+    done
+    [ "${#files[@]}" -ge 1 ] || die "no findings in $OUT — run first"
+    pfile="$OUT/.skeptic-prompt.md"
+    {
+      echo "You are a skeptic. Your job is to REFUTE, not to summarize."
+      echo "Below are findings from ${#files[@]} parallel units."
+      echo "For each material claim: is it actually supported by evidence, or asserted"
+      echo "confidently without proof? Flag (a) unsupported claims, (b) stale or undated"
+      echo "evidence, (c) sources that don't say what the finding claims, (d) conflicts"
+      echo "between units, (e) verification weaker than it looks (checked EXISTS, not"
+      echo "WORKS), (f) correlation/popularity/pain mistaken for willingness to pay."
+      echo "Return SURVIVES / WEAK / REFUTED per claim with a one-line reason."
+      echo "Default to WEAK when evidence is thin — do not be agreeable."
+      for f in "${files[@]}"; do echo; echo "===== unit: $(basename "$f") ====="; cat "$f"; done
+    } > "$pfile"
+    run_units "$LABEL" "review:$pfile"
+    ;;
+  status)
+    [ "${#UNITS[@]}" -eq 1 ] || die "status LABEL"
+    ws="$(ws_id "${UNITS[0]}")"; [ -n "$ws" ] || die "no workspace labelled ${UNITS[0]}"
+    herdr agent list | jget \
+      '"\n".join("%-20s %-8s %s" % (a["name"], a["pane_id"], a["agent_status"]) for a in j["result"]["agents"] if a.get("name") and a["workspace_id"]=="'"$ws"'") or "(no agents)"'
+    ;;
+  close)
+    [ "${#UNITS[@]}" -eq 1 ] || die "close LABEL"
+    ws="$(ws_id "${UNITS[0]}")"; [ -n "$ws" ] || die "no workspace labelled ${UNITS[0]}"
+    herdr workspace close "$ws"
+    ;;
+  *) die "unknown command $CMD (run|skeptic|status|close)" ;;
+esac
