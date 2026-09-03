@@ -27,7 +27,7 @@ else
   pass "old-rule-10-gone"
 fi
 
-if grep -q "graph-engineering" "$ROOT/portable-skills/fanout/SKILL.md"; then
+if grep -q "graph-engineering" "$ROOT/portable-skills/thinking-tools/SKILL.md"; then
   pass "fanout-parent"
 else
   bad "fanout-parent"
@@ -78,7 +78,7 @@ else
 fi
 
 if grep -q 'graph-engineering' "$ROOT/bin/lib/portable-skills.sh" \
-    && grep -q 'fanout' "$ROOT/bin/lib/portable-skills.sh"; then
+    && grep -q 'thinking-tools' "$ROOT/bin/lib/portable-skills.sh"; then
   pass "portable-skills-set"
 else
   bad "portable-skills-set"

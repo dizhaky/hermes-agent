@@ -1,7 +1,7 @@
 # Platform adapters for graph engineering
 
 The discipline in `SKILL.md` is tool-neutral. Only spawn syntax differs.
-Fan-out spawn details live in `fanout/references/PLATFORMS.md` — do not
+Fan-out spawn details live in `thinking-tools/references/PLATFORMS.md` — do not
 duplicate them here.
 
 ## Grok Build
@@ -39,14 +39,14 @@ into the git tree is also refused).
 
 ## Claude Code
 
-`fanout` skill. `Agent` / Task calls in **one message**. Workers
+`thinking-tools` skill. `Agent` / Task calls in **one message**. Workers
 `fanout-worker`, skeptic `fanout-skeptic`. Writer isolation: worktrees.
 
 Paste-ready prompts: [templates.md](templates.md).
 
 ## Cursor / Antigravity
 
-Same diamond. Spawn syntax in `fanout/references/PLATFORMS.md`.
+Same diamond. Spawn syntax in `thinking-tools/references/PLATFORMS.md`.
 
 ## Hermes
 

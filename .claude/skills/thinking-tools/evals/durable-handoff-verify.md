@@ -8,4 +8,3 @@
 - Feed a checkpoint with a falsely-marked-done item → resume catches it at the
   verify step.
 - Schema lint: the written record parses back into all required fields.
-

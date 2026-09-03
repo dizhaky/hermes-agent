@@ -28,7 +28,7 @@ Grok:
 }
 ```
 
-Claude / Cursor: load `fanout`. Units = the four questions above. Skeptic
+Claude / Cursor: load `thinking-tools`. Units = the four questions above. Skeptic
 required. Synthesis is the report.
 
 ## Repo review (read-only)
@@ -54,5 +54,5 @@ any apply-back.
 
 ## Discovery of unknown size
 
-Do **not** graph this first. Run a loop (`loop-keep-rate`) until the
+Do **not** graph this first. Run a loop (`thinking-tools` § Loop stop rule) until the
 work list is known, then graph the independent leftovers.

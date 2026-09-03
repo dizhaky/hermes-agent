@@ -8,4 +8,3 @@
 - Change weights after scoring → the skill refuses / re-scores clean.
 - Transitive tournament (A>B>C) → A wins the bracket.
 - Arithmetic audit: weighted totals recompute by hand.
-
