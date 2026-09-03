@@ -1,5 +1,11 @@
 # Hermes Agent - Development Guide
 
+> **This fork is deprecated for Dan's fleet as of 2026-09-03.** Nothing in Dan's
+> infrastructure reads from `dizhaky/hermes-agent` any more, and automation must not
+> sync into it — see [DEPRECATED.md](DEPRECATED.md). Upstream
+> [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) is unaffected
+> and remains active; the rest of this guide is upstream's and is left intact.
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 **Never give up on the right solution.**
