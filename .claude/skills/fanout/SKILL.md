@@ -52,8 +52,14 @@ is `/workflow graph-run`.
 
 This skill is tool-neutral. For the exact spawn syntax in your tool, read
 `references/PLATFORMS.md`. If your tool has no parallel-subagent primitive,
-read the degradation rules in that file — do not silently run it serially and
-call it a fan-out.
+or the workers must outlive the session (unattended runs, long units, a
+worker you may need to inspect or unblock mid-run), use the **herdr** backend:
+`scripts/herdr-fanout run UNIT.md...` runs Phase 2 on herdr panes and
+`scripts/herdr-fanout skeptic` runs Phase 3; both print
+`expected=N actual=M blocked=B` and exit non-zero on any gap. Details in
+`references/PLATFORMS.md § herdr`. Only without herdr fall back to the
+degradation rules there — do not silently run it serially and call it a
+fan-out.
 
 ## When to trigger
 
