@@ -26,7 +26,7 @@ inference.
 ## Grok Build
 
 Skill lives in `~/.grok/skills/graph-engineering/` (and the portable
-`fanout` copy under `~/.agents/skills/fanout/`). Subagents: `fanout-worker`,
+`thinking-tools` copy under `~/.agents/skills/thinking-tools/`). Subagents: `fanout-worker`,
 `fanout-skeptic` (loaded via Claude-compat agents).
 
 **Preferred:** `/workflow graph-run` — coordination is a Rhai script, so
@@ -55,7 +55,7 @@ See `graph-engineering/references/platforms.md` for args shape.
 
 ## Claude Code
 
-Skill lives in `~/.claude/skills/fanout/` or `.claude/skills/fanout/`.
+Skill lives in `~/.claude/skills/thinking-tools/` or `.claude/skills/thinking-tools/`.
 Subagent definitions in `.claude/agents/*.md`.
 
 ```
@@ -150,7 +150,7 @@ worktree), or `share`. Monitor via the subagent panel or `Alt+J` in the CLI.
 | `model` | string | `inherit` | `inherit`, `flash`, or `pro` |
 | `commandExecutionPolicy` | string | `sandbox` | `off`, `auto`, `eager`, `sandbox` |
 | `mcpServers` | object[] | `[]` | per-subagent MCP servers |
-| `skills` | string[] | `[]` | e.g. `skills/fanout` |
+| `skills` | string[] | `[]` | e.g. `skills/thinking-tools` |
 
 Tier mapping: `flash` for workers, `pro` for skeptic and synthesis.
 

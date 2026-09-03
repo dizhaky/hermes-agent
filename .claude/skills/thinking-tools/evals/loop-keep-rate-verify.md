@@ -6,4 +6,3 @@
 - Feed a steady-high log → CONTINUE.
 - Feed all-zeros → FIX-GENERATOR, not STOP.
 - Override the threshold → the new threshold is respected.
-

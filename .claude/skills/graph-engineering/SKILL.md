@@ -8,14 +8,14 @@ description: >
   not serialize independent jobs. Do NOT use for a single sequential
   job, a tight human-approval loop, or exploratory work you cannot yet
   name. Slash: /graph-engineering. Grok: /workflow graph-run. Parent of
-  fanout.
+  thinking-tools § Fan-out playbook.
 ---
 
 # Graph engineering
 
 Always run the fake-edge test before serializing 2+ steps. Load this
 skill; do not reimplement it from memory. Grok: `/workflow graph-run`
-when a graph exists. `fanout` is the diamond after the test says yes.
+when a graph exists. `thinking-tools` § Fan-out playbook is the diamond after the test says yes.
 
 > `[AUTO]` means the fake-edge test is always-on, not that every task
 > is a diamond. Skip-graph cases below still apply. Do not genericize
@@ -25,10 +25,10 @@ A graph is a plan: which jobs happen, and which job must wait for which.
 Nodes think. Edges carry results. A chain of "then" is a graph with no
 width — it runs correctly and slowly, and dies at the first stall.
 
-`fanout` is the diamond specialization of this skill. Load it after the
+`thinking-tools` § Fan-out playbook is the diamond specialization of this skill. Load it after the
 fake-edge test says a graph exists. Related: `unlazy` (anchors),
-`red-team` (fresh-context attack on a finished artifact),
-`loop-keep-rate` (stop a loop that is no longer paying).
+Same skill also carries § Red-team (fresh-context attack on a finished
+artifact) and § Loop stop rule (stop a loop that is no longer paying).
 
 Platform spawn syntax: [references/platforms.md](references/platforms.md).
 Paste-ready graphs: [references/templates.md](references/templates.md).
@@ -109,7 +109,7 @@ gets cheaper; the work itself does not.
 ## 8. How to run it here
 
 **Interactive (any tool):** draw the graph, cut fake edges, then run
-`fanout` if 3+ independent units remain and serial work would exceed
+`thinking-tools` § Fan-out playbook if 3+ independent units remain and serial work would exceed
 ~15 minutes.
 
 **Grok:** `/workflow graph-run` with `args.objective` and optional
